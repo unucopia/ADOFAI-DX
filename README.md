@@ -28,7 +28,7 @@ ADOFAI DX 是一个面向 Steam 版《A Dance of Fire and Ice》的 UnityModMana
 - HOLD 链与自动衔接不会因沿用旧角度而被误判为 Miss
 - 多押只在最终落点计算一次，同一拍可记录多个不同 DX 音符
 - DX Perfect 奖励并入 X 准度，并显示 `(+x.xx%)`
-- DX Perfect 判定始终为当前原版 Perfect 角宽的 1/3
+- DX Perfect 判定始终为当前原版 Perfect 判定的 1/3
 - DX 视觉跟随原音符透明度与显示/隐藏事件
 - 初次加载时自动校正轮廓，避免临时五边形光晕
 - 不规则音符使用三角网格真实外边界生成发光
@@ -39,14 +39,13 @@ ADOFAI DX 是一个面向 Steam 版《A Dance of Fire and Ice》的 UnityModMana
 - 发光直接使用音符网格的多层放大剪影
 - Mesh 与 Sprite 音符均支持 DX 表面和发光
 - 实时 DX-Accuracy UI，可调整像素位置和大小
-- 实时 DX-Accuracy 显示本模组贡献的 0%–1% 奖励，保留四位小数
+- 实时 DX-Accuracy 显示本模组贡献的 0%–1% 准度奖励
 - 实时 UI 小标跟随轨道主色，并根据排列切换左右位置
 - 结算保持原版 X 准度格式，并在百分号后显示模组奖励
 - 内置 Chime / Click / Off 音效与统一音量
 - 独立自定义 Break/Miss 音效
 - 自定义 Break 特效颜色、文字、大小和图片
 - 10 语言设置界面：English、한국어、Español、Polski、Français、Tiếng Việt、中文（简体）、Русский、日本語、Deutsch
-- 旧 DX、Break、CP 标记兼容
 
 ## 支持的音频
 
@@ -77,8 +76,4 @@ dotnet build ADOFAI_DX/ADOFAI_DX/ADOFAI_DX.csproj -c Release
 ## 兼容性说明
 
 DX 标记使用原版 `EditorComment` 事件保存，不修改游戏事件枚举。未安装本模组的玩家可以正常加载和游玩带有 DX 标记的谱面。
-
-旧版本谱面如果仍包含 Flash 形式的 DX/CP/Break 标记，安装模组后打开编辑器会自动转换。看到转换提示后请保存一次谱面，以移除关闭模组时残留的闪光效果。
-
-
-未进行大量的模组兼容性测试
+未进行大量模组兼容性测试
