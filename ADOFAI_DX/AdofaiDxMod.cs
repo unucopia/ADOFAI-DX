@@ -137,6 +137,10 @@ public static class AdofaiDxMod
 
 	internal const float BreakWindowScale = 1f / 3f;
 
+	private const float BreakMaxXAccuracyBonus = 0.01f;
+
+	private const float BreakAccuracyDisplayEpsilon = 0.0000001f;
+
 	internal const int DefaultDxColorR = 255;
 
 	internal const int DefaultDxColorG = 107;
@@ -176,6 +180,16 @@ public static class AdofaiDxMod
 	private static LevelData legacyMigrationCheckedLevel;
 
 	private static float nextMarkerRefreshTime;
+
+	private static readonly FieldInfo DetailedResultsResultsField = typeof(DetailedResults).GetField("results", BindingFlags.Instance | BindingFlags.NonPublic);
+
+	private static readonly FieldInfo DetailedResultsPlayerIndexField = typeof(DetailedResults).GetField("currentPlayerIndex", BindingFlags.Instance | BindingFlags.NonPublic);
+
+	private static readonly FieldInfo DetailedResultsTextComponentField = typeof(DetailedResults).GetField("textComponent", BindingFlags.Instance | BindingFlags.Public);
+
+	private static readonly MethodInfo DetailedResultsGenerateResultsMethod = typeof(DetailedResults).GetMethod("GenerateResults", BindingFlags.Instance | BindingFlags.NonPublic);
+
+	private static int lastDetailedResultsStateKey = int.MinValue;
 
 	private static GUIStyle badgeStyle;
 
@@ -335,6 +349,7 @@ public static class AdofaiDxMod
 
 	internal static void UpdateFromOverlay()
 	{
+		RefreshDetailedResultsDisplayIfNeeded();
 		if (settings != null && !settings.enableDXNotes)
 		{
 			DisableDXRuntimeState();
@@ -370,6 +385,68 @@ public static class AdofaiDxMod
 		{
 			ToggleMarkerOnSelectedFloor(instance);
 		}
+	}
+
+	private static void RefreshDetailedResultsDisplayIfNeeded()
+	{
+		if (settings == null)
+		{
+			return;
+		}
+		scrController controller = scrController.instance;
+		DetailedResults detailedResults = (((UnityEngine.Object)(object)controller == null) ? null : controller.detailedResults);
+		object textComponent = ((detailedResults == null) ? null : DetailedResultsTextComponentField?.GetValue(detailedResults));
+		if (detailedResults == null || textComponent == null || !detailedResults.gameObject.activeInHierarchy)
+		{
+			lastDetailedResultsStateKey = int.MinValue;
+			return;
+		}
+		int stateKey = (settings.enableDXNotes ? 1 : 0) | (settings.mergeDXAccuracy ? 2 : 0) | (settings.language << 2) | (Persistence.showXAccuracy ? 256 : 0);
+		if (stateKey == lastDetailedResultsStateKey)
+		{
+			return;
+		}
+		string[] results = DetailedResultsResultsField?.GetValue(detailedResults) as string[];
+		scrPlayerManager playerManager = scrPlayerManager.instance;
+		scrPlayer[] players = ((playerManager == null) ? null : playerManager.players);
+		if (results == null || players == null || players.Length == 0)
+		{
+			return;
+		}
+		int playerIndex = ((DetailedResultsPlayerIndexField == null) ? 0 : Convert.ToInt32(DetailedResultsPlayerIndexField.GetValue(detailedResults)));
+		playerIndex = Mathf.Clamp(playerIndex, 0, players.Length - 1);
+		scrPlayer player = players[playerIndex];
+		if ((UnityEngine.Object)(object)player == null || player.marginTracker == null)
+		{
+			return;
+		}
+		if (DetailedResultsGenerateResultsMethod == null)
+		{
+			return;
+		}
+		string resultText;
+		try
+		{
+			resultText = DetailedResultsGenerateResultsMethod.Invoke(detailedResults, new object[1] { player.marginTracker }) as string;
+		}
+		catch (Exception ex)
+		{
+			modEntry.Logger.Error("Failed to refresh detailed results: " + ex);
+			return;
+		}
+		if (resultText == null)
+		{
+			return;
+		}
+		System.Reflection.PropertyInfo textProperty = textComponent.GetType().GetProperty("text", BindingFlags.Instance | BindingFlags.Public);
+		if (textProperty == null)
+		{
+			return;
+		}
+		results[playerIndex] = resultText;
+		textProperty.SetValue(textComponent, resultText, null);
+		lastDetailedResultsStateKey = stateKey;
+		modEntry.Logger.Log("Refreshed detailed results after settings changed (mod=" + settings.enableDXNotes + ", merge=" + settings.mergeDXAccuracy + ", player=" + playerIndex + ").");
 	}
 
 	internal static void DrawOverlay()
@@ -831,6 +908,50 @@ public static class AdofaiDxMod
 					return "Notenschwebe-Stärke";
 				}
 			}
+			if (english == "Merge DX accuracy")
+			{
+				switch (num)
+				{
+				case 1:
+					return "DX 정확도 합치기";
+				case 2:
+					return "Combinar precisión DX";
+				case 3:
+					return "Scal dokładność DX";
+				case 4:
+					return "Fusionner la précision DX";
+				case 5:
+					return "Gộp độ chính xác DX";
+				case 7:
+					return "Объединять точность DX";
+				case 8:
+					return "DX精度を合算";
+				case 9:
+					return "DX-Genauigkeit zusammenführen";
+				}
+			}
+			if (english == "Mod master switch")
+			{
+				switch (num)
+				{
+				case 1:
+					return "모드 전체 스위치";
+				case 2:
+					return "Interruptor general del mod";
+				case 3:
+					return "Główny przełącznik moda";
+				case 4:
+					return "Interrupteur général du mod";
+				case 5:
+					return "Công tắc tổng của mod";
+				case 7:
+					return "Общий переключатель мода";
+				case 8:
+					return "MOD全体スイッチ";
+				case 9:
+					return "Mod-Hauptschalter";
+				}
+			}
 			if (english == "Audio presets")
 			{
 				switch (num)
@@ -1041,11 +1162,21 @@ public static class AdofaiDxMod
 	{
 		DestroyDXGameplayVisuals(restoreColors: true);
 		DestroyDxMarkerObjects();
-		breakAttempts.Clear();
 		breakVisuals.Clear();
-		markedFloors.Clear();
+		if (!IsDetailedResultsVisible())
+		{
+			breakAttempts.Clear();
+			markedFloors.Clear();
+		}
 		lastReportedMarkerCount = -1;
 		activeColorPicker = 0;
+	}
+
+	private static bool IsDetailedResultsVisible()
+	{
+		scrController controller = scrController.instance;
+		DetailedResults detailedResults = (((UnityEngine.Object)(object)controller == null) ? null : controller.detailedResults);
+		return detailedResults != null && detailedResults.gameObject.activeInHierarchy;
 	}
 
 	private static void ResetCAcuracyPosition()
@@ -1101,7 +1232,7 @@ public static class AdofaiDxMod
 			}
 		}
 		GUILayout.BeginHorizontal();
-		GUILayout.Label(L("DX 音符总开关", "DX notes master switch"), GUILayout.Width(220f));
+		GUILayout.Label(L("MOD 总开关", "Mod master switch"), GUILayout.Width(220f));
 		settings.enableDXNotes = GUILayout.Toggle(settings.enableDXNotes, L("启用", "Enabled"), GUILayout.Width(120f));
 		GUILayout.EndHorizontal();
 		if (!settings.enableDXNotes)
@@ -1110,6 +1241,10 @@ public static class AdofaiDxMod
 			DisableDXRuntimeState();
 			return;
 		}
+		GUILayout.BeginHorizontal();
+		GUILayout.Label(L("合并 DX 精准度", "Merge DX accuracy"), GUILayout.Width(180f));
+		settings.mergeDXAccuracy = GUILayout.Toggle(settings.mergeDXAccuracy, L("启用", "Enabled"), GUILayout.Width(100f));
+		GUILayout.EndHorizontal();
 		GUILayout.BeginHorizontal();
 		GUILayout.Label(L("语言", "Language"), GUILayout.Width(70f));
 		DrawLanguageSelector();
@@ -2424,7 +2559,8 @@ public static class AdofaiDxMod
 
 	private static void UpdateDXGameplayVisuals()
 	{
-		if (!IsGameplayActive() || settings == null || !settings.enableDXNotes || !settings.showGameplayDXMarker)
+		bool gameplayActive = IsGameplayActive();
+		if ((!gameplayActive && !IsEditorEditing()) || settings == null || !settings.enableDXNotes || !settings.showGameplayDXMarker)
 		{
 			DestroyDXGameplayVisuals(restoreColors: true);
 			activeDXVisualFloorIds.Clear();
@@ -2468,7 +2604,7 @@ public static class AdofaiDxMod
 			{
 				value.Root.SetActive(sourceActive);
 			}
-			bool judged = floor.seqID < instance2.currentFloorID || breakAttempts.Any((BreakAttempt attempt) => attempt.FloorId == floor.seqID);
+			bool judged = gameplayActive && (floor.seqID < instance2.currentFloorID || breakAttempts.Any((BreakAttempt attempt) => attempt.FloorId == floor.seqID));
 			UpdateDXFloatingMotion(value, unscaledTime, instance2.tileSize, judged, settings.gameplayDXFloat);
 			if (!sourceActive || !renderer.isVisible)
 			{
@@ -2529,6 +2665,12 @@ public static class AdofaiDxMod
 		{
 			DestroyDXGameplayVisual(floorId, dxGameplayVisuals[floorId], restoreColor: true);
 		}
+	}
+
+	private static bool IsEditorEditing()
+	{
+		scnEditor editor = scnEditor.instance;
+		return (UnityEngine.Object)(object)editor != null && !editor.playMode;
 	}
 
 	private static Mesh GetOrCreateDXSurfaceMesh(Mesh sourceMesh)
@@ -4477,7 +4619,7 @@ public static class AdofaiDxMod
 
 	internal static float GetBreakXAccuracyBonus(scrMarginTracker tracker)
 	{
-		if (settings == null || !settings.enableDXNotes || tracker == null || markedFloors.Count == 0)
+		if (settings == null || !settings.enableDXNotes || !settings.mergeDXAccuracy || tracker == null || markedFloors.Count == 0)
 		{
 			return 0f;
 		}
@@ -4491,18 +4633,34 @@ public static class AdofaiDxMod
 		{
 			return 0f;
 		}
-		return Mathf.Min(0.01f, (float)perfectCount / (float)markedFloors.Count * 0.01f);
+		return CalculateBreakXAccuracyBonus(perfectCount);
 	}
 
-	private static float GetResultBreakBonus(scrMarginTracker tracker)
+	private static float CalculateBreakXAccuracyBonus(int perfectCount)
+	{
+		if (perfectCount <= 0 || markedFloors.Count <= 0)
+		{
+			return 0f;
+		}
+		float bonus = Mathf.Clamp01((float)perfectCount / (float)markedFloors.Count) * BreakMaxXAccuracyBonus;
+		if (perfectCount >= markedFloors.Count)
+		{
+			bonus += BreakAccuracyDisplayEpsilon;
+		}
+		return Mathf.Min(BreakMaxXAccuracyBonus + BreakAccuracyDisplayEpsilon, bonus);
+	}
+
+	private static void GetResultBreakStatistics(scrMarginTracker tracker, out int perfectCount, out int totalCount)
 	{
 		if (markedFloors.Count == 0)
 		{
 			RefreshMarkerCache();
 		}
+		totalCount = markedFloors.Count;
 		if (markedFloors.Count == 0)
 		{
-			return 0f;
+			perfectCount = 0;
+			return;
 		}
 		Dictionary<int, BreakAttempt> dictionary = new Dictionary<int, BreakAttempt>();
 		foreach (BreakAttempt breakAttempt in breakAttempts)
@@ -4512,10 +4670,8 @@ public static class AdofaiDxMod
 				dictionary[breakAttempt.FloorId] = breakAttempt;
 			}
 		}
-		int num = dictionary.Values.Count((BreakAttempt a) => a.Perfect);
-		float num2 = Mathf.Min(0.01f, (float)num / (float)markedFloors.Count * 0.01f);
-		modEntry.Logger.Log("Detailed result DX bonus: " + num + "/" + markedFloors.Count + " = " + (num2 * 100f).ToString("0.0000", CultureInfo.InvariantCulture) + "% (tracker=" + ((tracker == null) ? "null" : "ok") + ").");
-		return num2;
+		perfectCount = dictionary.Values.Count((BreakAttempt a) => a.Perfect);
+		modEntry.Logger.Log("Detailed result DX: " + perfectCount + "/" + totalCount + " = " + ((decimal)perfectCount * 100m / (decimal)totalCount).ToString("0.00", CultureInfo.InvariantCulture) + "%, merge=" + settings.mergeDXAccuracy + " (tracker=" + ((tracker == null) ? "null" : "ok") + ").");
 	}
 
 	internal static string AddBreakBonusToResultText(string resultText, scrMarginTracker tracker)
@@ -4546,9 +4702,22 @@ public static class AdofaiDxMod
 		{
 			return resultText;
 		}
-		float resultBreakBonus = GetResultBreakBonus(tracker);
-		string value = "(+" + (resultBreakBonus * 100f).ToString("0.00", CultureInfo.InvariantCulture) + "%)";
-		return resultText.Insert(num + 1, value);
+		GetResultBreakStatistics(tracker, out var perfectCount, out var _);
+		float resultBreakBonus = CalculateBreakXAccuracyBonus(perfectCount);
+		if (settings.mergeDXAccuracy)
+		{
+			string value = "(+" + (resultBreakBonus * 100f).ToString("0.00", CultureInfo.InvariantCulture) + "%)";
+			return resultText.Insert(num + 1, value);
+		}
+		decimal baseXAccuracyPercent = ((tracker == null) ? 0m : ((decimal)tracker.percentXAcc * 100m));
+		decimal dxAccuracyPercent = Math.Min(101m, baseXAccuracyPercent + (decimal)resultBreakBonus * 100m);
+		string value2 = Localized("DX-精准度: ", "DX-Accuracy: ") + dxAccuracyPercent.ToString("0.00", CultureInfo.InvariantCulture) + "%";
+		if (Math.Round(dxAccuracyPercent, 2, MidpointRounding.AwayFromZero) >= 101m)
+		{
+			value2 = "<color=#FFDA00>" + value2 + "</color>";
+		}
+		resultText = ((num2 >= 0) ? resultText.Insert(num2 + 1, value2 + "\n") : (resultText + "\n" + value2));
+		return resultText;
 	}
 
 	private static void DrawEditorInfo()
@@ -4693,52 +4862,25 @@ internal sealed class AdofaiDxOverlay : MonoBehaviour
 		AdofaiDxMod.SetCustomAudioClip(perfect, obj, (obj != null) ? AdofaiDxMod.Localized("自定义音效已加载: " + path, "Custom audio loaded: " + path) : AdofaiDxMod.Localized("自定义音效加载失败或超过 30 秒: " + path, "Custom audio failed or exceeds 30 seconds: " + path));
 	}
 }
-internal struct BreakSwitchContext
-{
-	public bool Valid;
-
-	public scrFloor Target;
-
-	public scrFloor Source;
-
-	public double CachedAngle;
-
-	public double TargetExitAngle;
-
-	public bool IsClockwise;
-
-	public float BpmTimesSpeed;
-
-	public float Pitch;
-
-	public double MarginScale;
-
-	public bool IsAuto;
-
-	public string NoteType;
-}
-[HarmonyPatch(typeof(scrPlanet), "SwitchChosen")]
+[HarmonyPatch(typeof(scrPlanet), "MoveToNextFloor")]
 internal static class BreakJudgementPatch
 {
-	private static void Prefix(scrPlanet __instance, out BreakSwitchContext __state)
+	private static void Prefix(scrPlanet __instance, scrFloor __0, HitMargin __2)
 	{
-		__state = default(BreakSwitchContext);
-		if ((UnityEngine.Object)(object)__instance == null || (UnityEngine.Object)(object)__instance.currfloor == null || (UnityEngine.Object)(object)__instance.currfloor.nextfloor == null || (UnityEngine.Object)(object)__instance.player == null)
+		if ((UnityEngine.Object)(object)__instance == null || (UnityEngine.Object)(object)__instance.currfloor == null || (UnityEngine.Object)(object)__0 == null || (UnityEngine.Object)(object)__instance.player == null)
 		{
 			return;
 		}
-		scrFloor nextfloor = __instance.currfloor.nextfloor;
-		if (!AdofaiDxMod.IsBreakFloor(nextfloor.seqID))
+		scrFloor source = __instance.currfloor;
+		scrFloor target = __0;
+		if (!AdofaiDxMod.IsBreakFloor(target.seqID))
 		{
 			return;
 		}
-		__state.Source = __instance.currfloor;
-		__state.Target = nextfloor;
-		__state.NoteType = AdofaiDxMod.DescribeBreakNoteType(__instance.currfloor, nextfloor, __instance.player);
-		if (AdofaiDxMod.IsAutomaticBreakTransition(nextfloor, __instance.player))
+		string text = AdofaiDxMod.DescribeBreakNoteType(source, target, __instance.player);
+		if (AdofaiDxMod.IsAutomaticBreakTransition(target, __instance.player))
 		{
-			__state.Valid = true;
-			__state.IsAuto = true;
+			AdofaiDxMod.RecordBreakHit(target, perfect: true, HitMargin.Perfect, text + "+Automatic");
 			return;
 		}
 		scrConductor instance = scrConductor.instance;
@@ -4752,46 +4894,21 @@ internal static class BreakJudgementPatch
 			System.Reflection.PropertyInfo property = value.GetType().GetProperty("pitch");
 			if (!(property == null))
 			{
-				__state.Valid = true;
-				__state.CachedAngle = __instance.cachedAngle;
-				__state.TargetExitAngle = __instance.targetExitAngle;
-				__state.IsClockwise = __instance.planetarySystem.isCW;
-				__state.BpmTimesSpeed = (float)((double)instance.bpm * __instance.planetarySystem.speed);
-				__state.Pitch = Convert.ToSingle(property.GetValue(value, null));
-				__state.MarginScale = nextfloor.marginScale;
+				double num = scrMisc.GetAdjustedAngleBoundaryInDeg(HitMarginGeneral.Perfect, (float)((double)instance.bpm * __instance.planetarySystem.speed), Convert.ToSingle(property.GetValue(value, null)), target.marginScale) * 0.3333333432674408;
+				double num2 = (__instance.cachedAngle - __instance.targetExitAngle) * (__instance.planetarySystem.isCW ? 1.0 : (-1.0)) * 57.295780181884766;
+				bool flag = Math.Abs(num2) <= num;
+				HitMargin grade;
+				if (flag)
+				{
+					double num3 = num / 3.0;
+					grade = ((Math.Abs(num2) <= num3) ? HitMargin.Perfect : ((num2 < 0.0) ? HitMargin.EarlyPerfect : HitMargin.LatePerfect));
+				}
+				else
+				{
+					grade = ((num2 < 0.0) ? HitMargin.VeryEarly : HitMargin.VeryLate);
+				}
+				AdofaiDxMod.RecordBreakHit(target, flag, grade, text);
 			}
-		}
-	}
-
-	private static void Postfix(scrPlanet __instance, scrPlanet __result, BreakSwitchContext __state)
-	{
-		if (!__state.Valid || (UnityEngine.Object)(object)__result == null || __result == __instance)
-		{
-			if (__state.Valid)
-			{
-				AdofaiDxMod.LogBreakSwitchMessage("Break switch ignored on floor " + __state.Target.seqID + " [" + __state.NoteType + "]: result " + (((UnityEngine.Object)(object)__result == null) ? "null" : "same planet") + ".");
-			}
-		}
-		else if (__state.IsAuto)
-		{
-			AdofaiDxMod.RecordBreakHit(__state.Target, perfect: true, HitMargin.Perfect, __state.NoteType + "+Automatic");
-		}
-		else
-		{
-			double num = scrMisc.GetAdjustedAngleBoundaryInDeg(HitMarginGeneral.Perfect, __state.BpmTimesSpeed, __state.Pitch, __state.MarginScale) * 0.3333333432674408;
-			double num2 = (__state.CachedAngle - __state.TargetExitAngle) * (__state.IsClockwise ? 1.0 : (-1.0)) * 57.295780181884766;
-			bool flag = Math.Abs(num2) <= num;
-			HitMargin grade;
-			if (flag)
-			{
-				double num3 = num / 3.0;
-				grade = ((Math.Abs(num2) <= num3) ? HitMargin.Perfect : ((num2 < 0.0) ? HitMargin.EarlyPerfect : HitMargin.LatePerfect));
-			}
-			else
-			{
-				grade = ((num2 < 0.0) ? HitMargin.VeryEarly : HitMargin.VeryLate);
-			}
-			AdofaiDxMod.RecordBreakHit(__state.Target, flag, grade, __state.NoteType);
 		}
 	}
 }
@@ -4874,6 +4991,8 @@ public sealed class AdofaiDxSettings : UnityModManager.ModSettings
 	public float gameplayDXGlowIntensity = 0.8f;
 
 	public bool sectionCAcuracy = true;
+
+	public bool mergeDXAccuracy = true;
 
 	public bool sectionCustomAudio;
 
