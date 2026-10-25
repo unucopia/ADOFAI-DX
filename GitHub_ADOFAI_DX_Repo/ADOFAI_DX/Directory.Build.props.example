@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <AdofaiGamePath>Path\To\A Dance of Fire and Ice</AdofaiGamePath>
+  </PropertyGroup>
+</Project>
