@@ -1,6 +1,7 @@
 # ADOFAI DX
 
 本README并未经过严谨的人工核验, 本项目大多数由AI辅助完成, 请注意鉴别
+
 This README has not been rigorously manually verified; please be mindful when evaluating its contents.
 Parts of this project were developed with assistance from AI coding tools.
 
@@ -76,4 +77,5 @@ dotnet build ADOFAI_DX/ADOFAI_DX/ADOFAI_DX.csproj -c Release
 ## 兼容性说明
 
 DX 标记使用原版 `EditorComment` 事件保存，不修改游戏事件枚举。未安装本模组的玩家可以正常加载和游玩带有 DX 标记的谱面。
+
 未进行大量模组兼容性测试
