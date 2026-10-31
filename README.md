@@ -27,8 +27,12 @@ dotnet build ADOFAI_DX/ADOFAI_DX/ADOFAI_DX.csproj -c Release
 
 游戏程序集路径由 `ADOFAI_DX.csproj` 中的绝对 `HintPath` 指定。
 
-## 兼容性说明
+## 其他说明
 
 DX 标记使用原版 `EditorComment` 事件保存，不修改游戏事件枚举。未安装本模组的玩家可以正常加载和游玩带有 DX 音符标记的谱面。
 
-未进行大量模组兼容性测试
+未进行大量模组兼容性测试。
+
+adofai的音符存在SpriteRenderer与MeshRenderer两种渲染后端, 渲染逻辑不同, 因技术与时间原因, SpriteRenderer谱面视觉效果有割舍。
+(SpriteRenderer渲染后端代表性谱面:First Town Of This Journey - かめりあ)
+(MeshRenderer渲染后端代表性谱面:Plum - R)
