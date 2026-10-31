@@ -53,11 +53,23 @@ public static class AdofaiDxMod
 
 		public Material SurfaceSpriteMaterial;
 
+		public MeshRenderer FullColorRenderer;
+
+		public SpriteRenderer FullColorSpriteRenderer;
+
+		public Mesh InnerEdgeColorMesh;
+
+		public Mesh FullColorMesh;
+
+		public bool OwnsFullColorMesh;
+
 		public Mesh GlowMesh;
 
 		public MeshRenderer GlowRenderer;
 
 		public Mesh MeshGlowSource;
+
+		public bool OwnsMeshGlowSource;
 
 		public MeshRenderer[] MeshGlowRenderers;
 
@@ -86,6 +98,8 @@ public static class AdofaiDxMod
 		public float OutlineRefreshUntil;
 
 		public float NextOutlineRefreshTime;
+
+		public float GlowBuiltIntensity = -1f;
 
 		public Mesh SourceMesh;
 
@@ -118,6 +132,25 @@ public static class AdofaiDxMod
 		public Vector3 FreezeScale;
 	}
 
+	private sealed class DXRainbowSurfaceState
+	{
+		public Vector3[] Vertices;
+
+		public bool[] BodyVertices;
+
+		public float[] NormalizedX;
+
+		public float[] NormalizedY;
+
+		public Color[] Colors;
+
+		public float LastUpdateTime;
+
+		public bool RainbowApplied;
+
+		public bool EdgeMaskApplied;
+	}
+
 	private struct BreakVisual
 	{
 		public Vector3 WorldPosition;
@@ -139,7 +172,11 @@ public static class AdofaiDxMod
 
 	private const float BreakMaxXAccuracyBonus = 0.01f;
 
-	private const float BreakAccuracyDisplayEpsilon = 0.0000001f;
+	private const float BreakAccuracyDisplayEpsilon = 1E-07f;
+
+	private const float MinDXColorVariation = 0.5f;
+
+	private const float MaxDXColorVariation = 10f;
 
 	internal const int DefaultDxColorR = 255;
 
@@ -170,6 +207,8 @@ public static class AdofaiDxMod
 	private static readonly MaterialPropertyBlock DXSurfacePropertyBlock = new MaterialPropertyBlock();
 
 	private static readonly Dictionary<int, Mesh> DXSurfaceMeshCache = new Dictionary<int, Mesh>();
+
+	private static readonly Dictionary<int, DXRainbowSurfaceState> DXSurfaceRainbowStates = new Dictionary<int, DXRainbowSurfaceState>();
 
 	private static readonly Dictionary<int, Mesh> DXGlowMeshCache = new Dictionary<int, Mesh>();
 
@@ -216,6 +255,8 @@ public static class AdofaiDxMod
 	private static Material dxEdgeMaterial;
 
 	private static Material dxGlowMaterial;
+
+	private static Material dxFullColorMaterial;
 
 	private static Texture2D dxGameplayTextTexture;
 
@@ -302,6 +343,8 @@ public static class AdofaiDxMod
 
 	public static bool Load(UnityModManager.ModEntry loadedEntry)
 	{
+		//IL_01a2: Unknown result type (might be due to invalid IL or missing references)
+		//IL_01ac: Expected O, but got Unknown
 		modEntry = loadedEntry;
 		modEntry.OnUnload = OnUnload;
 		modEntry.OnGUI = DrawSettingsGUI;
@@ -324,7 +367,7 @@ public static class AdofaiDxMod
 		settings.dxNoteColorR = Mathf.Clamp(settings.dxNoteColorR, 0, 255);
 		settings.dxNoteColorG = Mathf.Clamp(settings.dxNoteColorG, 0, 255);
 		settings.dxNoteColorB = Mathf.Clamp(settings.dxNoteColorB, 0, 255);
-		settings.dxColorVariation = Mathf.Clamp(settings.dxColorVariation, 1f, 3f);
+		settings.dxColorVariation = Mathf.Clamp(settings.dxColorVariation, 0.5f, 10f);
 		settings.gameplayDXFloatAmplitude = Mathf.Clamp(settings.gameplayDXFloatAmplitude, 1f, 3f);
 		InitializeFeedback();
 		EnsureAudioPresetFolder();
@@ -393,60 +436,54 @@ public static class AdofaiDxMod
 		{
 			return;
 		}
-		scrController controller = scrController.instance;
-		DetailedResults detailedResults = (((UnityEngine.Object)(object)controller == null) ? null : controller.detailedResults);
-		object textComponent = ((detailedResults == null) ? null : DetailedResultsTextComponentField?.GetValue(detailedResults));
-		if (detailedResults == null || textComponent == null || !detailedResults.gameObject.activeInHierarchy)
+		scrController instance = scrController.instance;
+		DetailedResults detailedResults = (((UnityEngine.Object)(object)instance == null) ? null : instance.detailedResults);
+		object obj = (((UnityEngine.Object)(object)detailedResults == null) ? null : DetailedResultsTextComponentField?.GetValue(detailedResults));
+		if ((UnityEngine.Object)(object)detailedResults == null || obj == null || !((Component)(object)detailedResults).gameObject.activeInHierarchy)
 		{
 			lastDetailedResultsStateKey = int.MinValue;
 			return;
 		}
-		int stateKey = (settings.enableDXNotes ? 1 : 0) | (settings.mergeDXAccuracy ? 2 : 0) | (settings.language << 2) | (Persistence.showXAccuracy ? 256 : 0);
-		if (stateKey == lastDetailedResultsStateKey)
+		int num = (int)((settings.enableDXNotes ? 1u : 0u) | (uint)(settings.mergeDXAccuracy ? 2 : 0) | (uint)(settings.language << 2)) | (Persistence.showXAccuracy ? 256 : 0);
+		if (num == lastDetailedResultsStateKey)
 		{
 			return;
 		}
-		string[] results = DetailedResultsResultsField?.GetValue(detailedResults) as string[];
-		scrPlayerManager playerManager = scrPlayerManager.instance;
-		scrPlayer[] players = ((playerManager == null) ? null : playerManager.players);
-		if (results == null || players == null || players.Length == 0)
+		string[] array = DetailedResultsResultsField?.GetValue(detailedResults) as string[];
+		scrPlayerManager instance2 = scrPlayerManager.instance;
+		scrPlayer[] array2 = (((UnityEngine.Object)(object)instance2 == null) ? null : instance2.players);
+		if (array == null || array2 == null || array2.Length == 0)
 		{
 			return;
 		}
-		int playerIndex = ((DetailedResultsPlayerIndexField == null) ? 0 : Convert.ToInt32(DetailedResultsPlayerIndexField.GetValue(detailedResults)));
-		playerIndex = Mathf.Clamp(playerIndex, 0, players.Length - 1);
-		scrPlayer player = players[playerIndex];
-		if ((UnityEngine.Object)(object)player == null || player.marginTracker == null)
+		int value = ((!(DetailedResultsPlayerIndexField == null)) ? Convert.ToInt32(DetailedResultsPlayerIndexField.GetValue(detailedResults)) : 0);
+		value = Mathf.Clamp(value, 0, array2.Length - 1);
+		scrPlayer scrPlayer = array2[value];
+		if ((UnityEngine.Object)(object)scrPlayer == null || scrPlayer.marginTracker == null || DetailedResultsGenerateResultsMethod == null)
 		{
 			return;
 		}
-		if (DetailedResultsGenerateResultsMethod == null)
-		{
-			return;
-		}
-		string resultText;
+		string text;
 		try
 		{
-			resultText = DetailedResultsGenerateResultsMethod.Invoke(detailedResults, new object[1] { player.marginTracker }) as string;
+			text = DetailedResultsGenerateResultsMethod.Invoke(detailedResults, new object[1] { scrPlayer.marginTracker }) as string;
 		}
 		catch (Exception ex)
 		{
 			modEntry.Logger.Error("Failed to refresh detailed results: " + ex);
 			return;
 		}
-		if (resultText == null)
+		if (text != null)
 		{
-			return;
+			System.Reflection.PropertyInfo property = obj.GetType().GetProperty("text", BindingFlags.Instance | BindingFlags.Public);
+			if (!(property == null))
+			{
+				array[value] = text;
+				property.SetValue(obj, text, null);
+				lastDetailedResultsStateKey = num;
+				modEntry.Logger.Log("Refreshed detailed results after settings changed (mod=" + settings.enableDXNotes + ", merge=" + settings.mergeDXAccuracy + ", player=" + value + ").");
+			}
 		}
-		System.Reflection.PropertyInfo textProperty = textComponent.GetType().GetProperty("text", BindingFlags.Instance | BindingFlags.Public);
-		if (textProperty == null)
-		{
-			return;
-		}
-		results[playerIndex] = resultText;
-		textProperty.SetValue(textComponent, resultText, null);
-		lastDetailedResultsStateKey = stateKey;
-		modEntry.Logger.Log("Refreshed detailed results after settings changed (mod=" + settings.enableDXNotes + ", merge=" + settings.mergeDXAccuracy + ", player=" + playerIndex + ").");
 	}
 
 	internal static void DrawOverlay()
@@ -525,7 +562,11 @@ public static class AdofaiDxMod
 
 	private static bool OnUnload(UnityModManager.ModEntry entry)
 	{
-		settings?.Save(entry);
+		AdofaiDxSettings adofaiDxSettings = settings;
+		if (adofaiDxSettings != null)
+		{
+			((UnityModManager.ModSettings)adofaiDxSettings).Save(entry);
+		}
 		if (overlayObject != null)
 		{
 			UnityEngine.Object.Destroy(overlayObject);
@@ -536,7 +577,11 @@ public static class AdofaiDxMod
 		}
 		DestroyDXGameplayVisuals(restoreColors: true);
 		DestroyDxMarkerObjects();
-		harmony?.UnpatchAll("ADOFAIDX");
+		Harmony obj = harmony;
+		if (obj != null)
+		{
+			obj.UnpatchAll("ADOFAIDX");
+		}
 		overlayObject = null;
 		overlayComponent = null;
 		feedbackObject = null;
@@ -577,12 +622,17 @@ public static class AdofaiDxMod
 		{
 			UnityEngine.Object.Destroy(dxGlowMaterial);
 		}
+		if (dxFullColorMaterial != null)
+		{
+			UnityEngine.Object.Destroy(dxFullColorMaterial);
+		}
 		roundedPanelTexture = null;
 		softGlowTexture = null;
 		ringGlowTexture = null;
 		spectrumPickerTexture = null;
 		dxEdgeMaterial = null;
 		dxGlowMaterial = null;
+		dxFullColorMaterial = null;
 		loggedDxVisualInfo = false;
 		loggedGameplayDxText = false;
 		screenTransitionActive = false;
@@ -862,6 +912,28 @@ public static class AdofaiDxMod
 					return "色を自動適用";
 				case 9:
 					return "Farbe automatisch übernehmen";
+				}
+			}
+			if (english == "Edge only")
+			{
+				switch (num)
+				{
+				case 1:
+					return "가장자리만";
+				case 2:
+					return "Solo borde";
+				case 3:
+					return "Tylko krawędź";
+				case 4:
+					return "Bord uniquement";
+				case 5:
+					return "Chỉ viền";
+				case 7:
+					return "Только край";
+				case 8:
+					return "縁のみ";
+				case 9:
+					return "Nur Rand";
 				}
 			}
 			if (english == "Color variation")
@@ -1174,9 +1246,13 @@ public static class AdofaiDxMod
 
 	private static bool IsDetailedResultsVisible()
 	{
-		scrController controller = scrController.instance;
-		DetailedResults detailedResults = (((UnityEngine.Object)(object)controller == null) ? null : controller.detailedResults);
-		return detailedResults != null && detailedResults.gameObject.activeInHierarchy;
+		scrController instance = scrController.instance;
+		DetailedResults detailedResults = (((UnityEngine.Object)(object)instance == null) ? null : instance.detailedResults);
+		if ((UnityEngine.Object)(object)detailedResults != null)
+		{
+			return ((Component)(object)detailedResults).gameObject.activeInHierarchy;
+		}
+		return false;
 	}
 
 	private static void ResetCAcuracyPosition()
@@ -1314,10 +1390,14 @@ public static class AdofaiDxMod
 			if (settings.showGameplayDXMarker)
 			{
 				GUILayout.BeginHorizontal();
+				GUILayout.Label(L("仅边缘", "Edge only"), GUILayout.Width(180f));
+				settings.onlyEdgeColor = GUILayout.Toggle(settings.onlyEdgeColor, L("启用", "Enabled"), GUILayout.Width(100f));
+				GUILayout.EndHorizontal();
+				GUILayout.BeginHorizontal();
 				GUILayout.Label(L("颜色自适应", "Color adaptive"), GUILayout.Width(180f));
 				settings.gameplayDXColorAdaptive = GUILayout.Toggle(settings.gameplayDXColorAdaptive, L("启用", "Enabled"), GUILayout.Width(100f));
 				GUILayout.EndHorizontal();
-				settings.dxColorVariation = DrawMultiplierRow(L("颜色浮动幅度", "Color variation"), settings.dxColorVariation);
+				settings.dxColorVariation = DrawDXColorVariationRow(L("颜色浮动幅度", "Color variation"), settings.dxColorVariation);
 				if (!settings.gameplayDXColorAdaptive)
 				{
 					DrawDXNoteColorRow();
@@ -1450,6 +1530,27 @@ public static class AdofaiDxMod
 		if (int.TryParse(GUILayout.TextField(num.ToString(), GUILayout.Width(58f)), out var result))
 		{
 			num = Mathf.Clamp(result, 100, 300);
+		}
+		GUILayout.Label("%", GUILayout.Width(20f));
+		GUILayout.EndHorizontal();
+		return (float)num / 100f;
+	}
+
+	private static float DrawDXColorVariationRow(string label, float value)
+	{
+		int num = Mathf.Clamp(Mathf.RoundToInt(value * 100f), 50, 1000);
+		GUILayout.BeginHorizontal();
+		GUILayout.Label(label, GUILayout.Width(180f));
+		num = Mathf.RoundToInt(GUILayout.HorizontalSlider(num, 50f, 1000f, GUILayout.Width(240f)));
+		if (int.TryParse(GUILayout.TextField((num >= 1000) ? "Max" : num.ToString(), GUILayout.Width(58f)), out var result))
+		{
+			num = Mathf.Clamp(result, 50, 1000);
+		}
+		if (num >= 1000)
+		{
+			GUILayout.Space(20f);
+			GUILayout.EndHorizontal();
+			return 10f;
 		}
 		GUILayout.Label("%", GUILayout.Width(20f));
 		GUILayout.EndHorizontal();
@@ -1698,7 +1799,7 @@ public static class AdofaiDxMod
 		GUI.Box(preview, GUIContent.none);
 		Color color2;
 		Color color3;
-		Color color = ((!perfect) ? (TryParseEffectColor(settings.failedEffectColor, out color2) ? color2 : new Color(1f, 0.24f, 0.2f)) : (TryParseEffectColor(settings.perfectEffectColor, out color3) ? color3 : new Color(0.2f, 1f, 0.65f)));
+		Color color = (perfect ? (TryParseEffectColor(settings.perfectEffectColor, out color2) ? color2 : new Color(0.2f, 1f, 0.65f)) : (TryParseEffectColor(settings.failedEffectColor, out color3) ? color3 : new Color(1f, 0.24f, 0.2f)));
 		color.a = Mathf.Clamp01(settings.effectOpacity);
 		DrawEffectShape(new Rect(preview.center.x - 15f, preview.yMin + 6f, 30f, 28f), settings.effectStyle, color, perfect ? GetEffectText(perfect: true) : GetEffectText(perfect: false), 1f, drawLabel: false);
 		GUIStyle style = new GUIStyle(GUI.skin.label)
@@ -1832,7 +1933,11 @@ public static class AdofaiDxMod
 
 	private static void SaveSettingsGUI(UnityModManager.ModEntry entry)
 	{
-		settings?.Save(entry);
+		AdofaiDxSettings adofaiDxSettings = settings;
+		if (adofaiDxSettings != null)
+		{
+			((UnityModManager.ModSettings)adofaiDxSettings).Save(entry);
+		}
 	}
 
 	private static string GetAudioPresetFolder()
@@ -2171,10 +2276,10 @@ public static class AdofaiDxMod
 		{
 			using (FileStream fileStream = File.OpenRead(path))
 			{
-				int num = (int)Math.Min(65536L, fileStream.Length);
-				byte[] array = new byte[num];
-				fileStream.Read(array, 0, num);
-				return Encoding.ASCII.GetString(array).Contains("vorbis");
+			int num = (int)Math.Min(65536L, fileStream.Length);
+			byte[] array = new byte[num];
+			fileStream.Read(array, 0, num);
+			return Encoding.ASCII.GetString(array).Contains("vorbis");
 			}
 		}
 		catch
@@ -2254,7 +2359,7 @@ public static class AdofaiDxMod
 			float num2 = (float)i / 44100f;
 			float num3 = (float)i / (float)num;
 			float num4 = Mathf.Pow(1f - num3, decay);
-			array[i] = Mathf.Sin((float)Math.PI * 2f * frequency * num2) * num4 * 0.28f;
+			array[i] = Mathf.Sin(Mathf.PI * 2f * frequency * num2) * num4 * 0.28f;
 		}
 		MethodInfo method = audioClipType.GetMethod("Create", new Type[5]
 		{
@@ -2343,7 +2448,7 @@ public static class AdofaiDxMod
 			}
 			else if (num2 != 2)
 			{
-				SfxSound sfxSound = ((!perfect) ? ((num2 != 1) ? SfxSound.PowerDown : SfxSound.MenuDecrement) : ((num2 == 1) ? SfxSound.MenuIncrement : SfxSound.PurePerfect));
+				SfxSound sfxSound = (perfect ? ((num2 == 1) ? SfxSound.MenuIncrement : SfxSound.PurePerfect) : ((num2 != 1) ? SfxSound.PowerDown : SfxSound.MenuDecrement));
 				typeof(scrSfx).GetMethod("PlaySfx", new Type[5]
 				{
 					typeof(SfxSound),
@@ -2367,7 +2472,7 @@ public static class AdofaiDxMod
 		{
 			return;
 		}
-		object obj = ((!perfect) ? ((num2 == 1) ? failedClickClip : failedChimeClip) : ((num2 == 1) ? perfectClickClip : perfectChimeClip));
+		object obj = (perfect ? ((num2 == 1) ? perfectClickClip : perfectChimeClip) : ((num2 == 1) ? failedClickClip : failedChimeClip));
 		float num3 = Mathf.Clamp01(perfect ? settings.perfectSoundVolume : settings.failedSoundVolume);
 		if (obj == null || num3 <= 0f)
 		{
@@ -2467,42 +2572,41 @@ public static class AdofaiDxMod
 		{
 			return;
 		}
-		for (int num2 = breakVisuals.Count - 1; num2 >= 0; num2--)
+		for (int num = breakVisuals.Count - 1; num >= 0; num--)
 		{
-			BreakVisual breakVisual = breakVisuals[num2];
-			float num3 = Time.unscaledTime - breakVisual.StartTime;
-			if (num3 >= 0.38f)
+			BreakVisual breakVisual = breakVisuals[num];
+			float num2 = Time.unscaledTime - breakVisual.StartTime;
+			if (num2 >= 0.38f)
 			{
-				breakVisuals.RemoveAt(num2);
+				breakVisuals.RemoveAt(num);
 			}
 			else
 			{
-				Vector3 effectWorldPosition = breakVisual.WorldPosition + Vector3.up * (0.35f * instance.tileSize);
-				Vector3 vector = main.WorldToScreenPoint(effectWorldPosition);
-				if (!(vector.z <= 0f))
+				Vector3 vector = breakVisual.WorldPosition + Vector3.up * (0.35f * instance.tileSize);
+				Vector3 vector2 = main.WorldToScreenPoint(vector);
+				if (!(vector2.z <= 0f))
 				{
-					float num4 = num3 / 0.38f;
-					float a = settings.effectOpacity * (1f - num4);
+					float num3 = num2 / 0.38f;
+					float a = settings.effectOpacity * (1f - num3);
 					Color color2;
 					Color color3;
-					Color color = ((!breakVisual.Perfect) ? (TryParseEffectColor(settings.failedEffectColor, out color2) ? color2 : new Color(1f, 0.24f, 0.2f)) : (TryParseEffectColor(settings.perfectEffectColor, out color3) ? color3 : new Color(0.2f, 1f, 0.65f)));
+					Color color = (breakVisual.Perfect ? (TryParseEffectColor(settings.perfectEffectColor, out color2) ? color2 : new Color(0.2f, 1f, 0.65f)) : (TryParseEffectColor(settings.failedEffectColor, out color3) ? color3 : new Color(1f, 0.24f, 0.2f)));
 					color.a = a;
-					float x = vector.x;
-					float num5 = (float)Screen.height - vector.y;
-					float num6 = Mathf.Clamp(settings.effectScale, 0.5f, 3f);
-					float tileScreenSize = GetWorldDistanceInPixels(main, effectWorldPosition, main.transform.right, instance.tileSize);
-					float num7 = Mathf.Clamp(tileScreenSize * (0.58f + 0.38f * num4) * num6, 16f, (float)Screen.height * 0.5f);
-					Rect rect = new Rect(x - num7 * 0.5f, num5 - num7 * 0.5f, num7, num7);
-					Texture2D texture2D = ((!breakVisual.Perfect) ? (settings.useCustomFailedImage ? customFailedTexture : null) : (settings.useCustomPerfectImage ? customPerfectTexture : null));
+					float x = vector2.x;
+					float num4 = (float)Screen.height - vector2.y;
+					float num5 = Mathf.Clamp(settings.effectScale, 0.5f, 3f);
+					float num6 = Mathf.Clamp(GetWorldDistanceInPixels(main, vector, main.transform.right, instance.tileSize) * (0.58f + 0.38f * num3) * num5, 16f, (float)Screen.height * 0.5f);
+					Rect rect = new Rect(x - num6 * 0.5f, num4 - num6 * 0.5f, num6, num6);
+					Texture2D texture2D = (breakVisual.Perfect ? (settings.useCustomPerfectImage ? customPerfectTexture : null) : (settings.useCustomFailedImage ? customFailedTexture : null));
 					if (texture2D != null)
 					{
 						GUI.color = new Color(1f, 1f, 1f, a);
 						GUI.DrawTexture(rect, texture2D, ScaleMode.ScaleToFit, alphaBlend: true);
-						DrawEffectShape(rect, 2, color, GetEffectText(breakVisual.Perfect), num4, drawLabel: true);
+						DrawEffectShape(rect, 2, color, GetEffectText(breakVisual.Perfect), num3, drawLabel: true);
 					}
 					else
 					{
-						DrawEffectShape(rect, settings.effectStyle, color, GetEffectText(breakVisual.Perfect), num4, drawLabel: true);
+						DrawEffectShape(rect, settings.effectStyle, color, GetEffectText(breakVisual.Perfect), num3, drawLabel: true);
 					}
 					GUI.color = Color.white;
 				}
@@ -2512,17 +2616,17 @@ public static class AdofaiDxMod
 
 	private static float GetWorldDistanceInPixels(Camera camera, Vector3 worldPosition, Vector3 worldDirection, float worldDistance)
 	{
-		if (camera == null || worldDirection.sqrMagnitude < 0.000001f)
+		if (camera == null || worldDirection.sqrMagnitude < 1E-06f)
 		{
 			return 0f;
 		}
-		Vector3 start = camera.WorldToScreenPoint(worldPosition);
-		Vector3 end = camera.WorldToScreenPoint(worldPosition + worldDirection.normalized * Mathf.Max(0.0001f, worldDistance));
-		if (start.z <= 0f || end.z <= 0f)
+		Vector3 vector = camera.WorldToScreenPoint(worldPosition);
+		Vector3 vector2 = camera.WorldToScreenPoint(worldPosition + worldDirection.normalized * Mathf.Max(0.0001f, worldDistance));
+		if (vector.z <= 0f || vector2.z <= 0f)
 		{
 			return 0f;
 		}
-		return Vector2.Distance(start, end);
+		return Vector2.Distance((Vector2)vector, (Vector2)vector2);
 	}
 
 	private static void DrawEffectShape(Rect area, int style, Color color, string label, float progress, bool drawLabel)
@@ -2543,10 +2647,10 @@ public static class AdofaiDxMod
 			if (drawLabel)
 			{
 				GUIStyle gUIStyle = breakFeedbackStyle ?? GUI.skin.label;
-				float areaScale = Mathf.Clamp(area.height / 58f, 0.45f, 6f);
+				float num = Mathf.Clamp(area.height / 58f, 0.45f, 6f);
 				int fontSize = gUIStyle.fontSize;
-				gUIStyle.fontSize = Mathf.Max(8, Mathf.RoundToInt(18f * Mathf.Clamp(progress + 0.7f, 0.7f, 1.7f) * areaScale));
-				Rect position = new Rect(area.center.x - 110f * areaScale, area.yMin - 28f * areaScale, 220f * areaScale, 30f * areaScale);
+				gUIStyle.fontSize = Mathf.Max(8, Mathf.RoundToInt(18f * Mathf.Clamp(progress + 0.7f, 0.7f, 1.7f) * num));
+				Rect position = new Rect(area.center.x - 110f * num, area.yMin - 28f * num, 220f * num, 30f * num);
 				GUI.color = new Color(0f, 0f, 0f, color.a * 0.85f);
 				GUI.Label(new Rect(position.x + 1.5f, position.y + 1.5f, position.width, position.height), label, gUIStyle);
 				GUI.color = new Color(color.r, color.g, color.b, color.a);
@@ -2559,8 +2663,8 @@ public static class AdofaiDxMod
 
 	private static void UpdateDXGameplayVisuals()
 	{
-		bool gameplayActive = IsGameplayActive();
-		if ((!gameplayActive && !IsEditorEditing()) || settings == null || !settings.enableDXNotes || !settings.showGameplayDXMarker)
+		bool flag = IsGameplayActive();
+		if ((!flag && !IsEditorEditing()) || settings == null || !settings.enableDXNotes || !settings.showGameplayDXMarker)
 		{
 			DestroyDXGameplayVisuals(restoreColors: true);
 			activeDXVisualFloorIds.Clear();
@@ -2584,29 +2688,29 @@ public static class AdofaiDxMod
 				continue;
 			}
 			DXGameplayVisual value;
-			bool hasVisual = dxGameplayVisuals.TryGetValue(floor.seqID, out value);
-			if (hasVisual && (UnityEngine.Object)(object)value.Floor != (UnityEngine.Object)(object)floor)
+			bool flag2 = dxGameplayVisuals.TryGetValue(floor.seqID, out value);
+			if (flag2 && (UnityEngine.Object)(object)value.Floor != (UnityEngine.Object)(object)floor)
 			{
 				DestroyDXGameplayVisual(floor.seqID, value, restoreColor: true);
 				value = null;
-				hasVisual = false;
+				flag2 = false;
 			}
-			if (!hasVisual)
+			if (!flag2)
 			{
 				value = CreateDXGameplayVisual(floor, instance2.tileSize);
 				dxGameplayVisuals[floor.seqID] = value;
 			}
 			activeDXVisualFloorIds.Add(floor.seqID);
 			Renderer renderer = (((UnityEngine.Object)(object)floor.floorRenderer == null) ? null : floor.floorRenderer.renderer);
-			float opacity = Mathf.Clamp01(floor.opacity);
-			bool sourceActive = renderer != null && renderer.enabled && renderer.gameObject.activeInHierarchy && renderer.gameObject.activeSelf && opacity > 0.001f;
-			if (value.Root.activeSelf != sourceActive)
+			float num = Mathf.Clamp01(floor.opacity);
+			bool flag3 = renderer != null && renderer.enabled && renderer.gameObject.activeInHierarchy && renderer.gameObject.activeSelf && num > 0.001f;
+			if (value.Root.activeSelf != flag3)
 			{
-				value.Root.SetActive(sourceActive);
+				value.Root.SetActive(flag3);
 			}
-			bool judged = gameplayActive && (floor.seqID < instance2.currentFloorID || breakAttempts.Any((BreakAttempt attempt) => attempt.FloorId == floor.seqID));
+			bool judged = flag && (floor.seqID < instance2.currentFloorID || breakAttempts.Any((BreakAttempt attempt) => attempt.FloorId == floor.seqID));
 			UpdateDXFloatingMotion(value, unscaledTime, instance2.tileSize, judged, settings.gameplayDXFloat);
-			if (!sourceActive || !renderer.isVisible)
+			if (!flag3 || !renderer.isVisible)
 			{
 				continue;
 			}
@@ -2622,21 +2726,40 @@ public static class AdofaiDxMod
 				ResolveDXOutline(renderer, value, instance2.tileSize);
 				value.NextOutlineRefreshTime = unscaledTime + 0.1f;
 			}
-			Color baseColor = GetDXNoteBaseColor();
+			Color color = GetDXNoteBaseColor();
 			if (settings.gameplayDXColorAdaptive && (UnityEngine.Object)(object)floor.floorRenderer != null)
 			{
-				Color color = floor.floorRenderer.color;
-				color.a = 1f;
-				baseColor = color;
+				Color color2 = floor.floorRenderer.color;
+				color2.a = 1f;
+				color = color2;
 			}
-			float phase = (float)floor.seqID * 0.73f;
-			float wave = 0.5f + 0.5f * Mathf.Sin(unscaledTime * 1.8f + phase);
-			float flow = 0.5f + 0.5f * Mathf.Sin(unscaledTime * 2.65f + phase * 1.37f);
-			Color animated = DXAnimatedColor(baseColor, Mathf.Clamp01(wave * 0.72f + flow * 0.28f));
-			animated.a = opacity;
-			Color surfaceColor = Color.Lerp(animated, Color.white, 0.12f);
-			surfaceColor.a = animated.a;
-			SetDXSurfaceColor(value, surfaceColor);
+			float num2 = (float)floor.seqID * 0.73f;
+			float num3 = 0.5f + 0.5f * Mathf.Sin(unscaledTime * 1.8f + num2);
+			float num4 = 0.5f + 0.5f * Mathf.Sin(unscaledTime * 2.65f + num2 * 1.37f);
+			bool flag4 = IsDXColorVariationMax();
+			Color color3;
+			if (flag4)
+			{
+				if (settings.onlyEdgeColor)
+				{
+					RestoreDXSurfaceGradient(value.SurfaceMesh);
+					color3 = Color.white;
+				}
+				else
+				{
+					RestoreDXSurfaceGradient(value.SurfaceMesh);
+					color3 = DXRainbowColor(unscaledTime, num2);
+				}
+			}
+			else
+			{
+				RestoreDXSurfaceGradient(value.SurfaceMesh);
+				color3 = DXAnimatedColor(color, Mathf.Clamp01(num3 * 0.72f + num4 * 0.28f));
+			}
+			color3.a = num;
+			Color color4 = Color.Lerp(color3, Color.white, 0.12f);
+			color4.a = color3.a;
+			SetDXSurfaceColor(value, color4);
 			if (value.SurfaceRenderer != null)
 			{
 				value.SurfaceRenderer.enabled = true;
@@ -2645,13 +2768,28 @@ public static class AdofaiDxMod
 			{
 				value.SurfaceSpriteRenderer.enabled = true;
 			}
-			bool visible = value.GeometryReady;
-			value.Inner.enabled = false;
-			if (value.GlowRenderer != null)
+			bool geometryReady = value.GeometryReady;
+			bool flag5 = flag4 || (value.SurfaceSpriteRenderer != null && !settings.onlyEdgeColor);
+			bool flag6 = flag4 && settings.onlyEdgeColor;
+			Color color5 = color3;
+			bool spriteEdge = flag6 && value.SurfaceSpriteRenderer != null;
+			Mesh mesh = (spriteEdge ? value.FullColorMesh : (flag6 ? value.InnerEdgeColorMesh : ((value.FullColorMesh == null) ? value.MeshGlowSource : value.FullColorMesh)));
+			if (flag5 && mesh != null && mesh.vertexCount > 0)
 			{
-				value.GlowRenderer.enabled = false;
+				ApplyDXSurfaceRainbow(mesh, unscaledTime, spriteEdge);
+				color5 = Color.white;
 			}
-			UpdateDXMeshGlowLayers(value, baseColor, intensity, opacity, unscaledTime, visible);
+			else
+			{
+				RestoreDXSurfaceGradient(value.MeshGlowSource);
+			}
+			if (flag6 && (mesh == null || mesh.vertexCount == 0))
+			{
+				flag5 = false;
+			}
+			SetDXFullColorOverlay(value, color5, intensity, num, geometryReady, flag5, flag6 && !spriteEdge);
+			value.Inner.enabled = false;
+			BuildDXProceduralGlow(value, unscaledTime, intensity, instance2.tileSize, color, num, geometryReady, flag4);
 		}
 		dxVisualCleanupIds.Clear();
 		foreach (int key in dxGameplayVisuals.Keys)
@@ -2661,66 +2799,266 @@ public static class AdofaiDxMod
 				dxVisualCleanupIds.Add(key);
 			}
 		}
-		foreach (int floorId in dxVisualCleanupIds)
+		foreach (int dxVisualCleanupId in dxVisualCleanupIds)
 		{
-			DestroyDXGameplayVisual(floorId, dxGameplayVisuals[floorId], restoreColor: true);
+			DestroyDXGameplayVisual(dxVisualCleanupId, dxGameplayVisuals[dxVisualCleanupId], restoreColor: true);
 		}
 	}
 
 	private static bool IsEditorEditing()
 	{
-		scnEditor editor = scnEditor.instance;
-		return (UnityEngine.Object)(object)editor != null && !editor.playMode;
+		scnEditor instance = scnEditor.instance;
+		if ((UnityEngine.Object)(object)instance != null)
+		{
+			return !instance.playMode;
+		}
+		return false;
 	}
 
 	private static Mesh GetOrCreateDXSurfaceMesh(Mesh sourceMesh)
 	{
-		int key = sourceMesh.GetInstanceID();
-		if (!DXSurfaceMeshCache.TryGetValue(key, out Mesh mesh) || mesh == null)
+		int instanceID = sourceMesh.GetInstanceID();
+		if (!DXSurfaceMeshCache.TryGetValue(instanceID, out var value) || value == null)
 		{
-			mesh = UnityEngine.Object.Instantiate(sourceMesh);
-			mesh.name = "ADOFAIDX_DX_Gradient_Cached_" + key;
-			ApplyDXMeshVertexColors(mesh);
-			DXSurfaceMeshCache[key] = mesh;
+			value = UnityEngine.Object.Instantiate(sourceMesh);
+			value.name = "ADOFAIDX_DX_Gradient_Cached_" + instanceID;
+			ApplyDXMeshVertexColors(value);
+			DXSurfaceMeshCache[instanceID] = value;
 		}
-		return mesh;
+		return value;
+	}
+
+	private static void ApplyDXSurfaceRainbow(Mesh mesh, float time, bool edgeMask = false)
+	{
+		if (mesh == null)
+		{
+			return;
+		}
+		int instanceID = mesh.GetInstanceID();
+		if (!DXSurfaceRainbowStates.TryGetValue(instanceID, out var value) || value.Vertices == null || value.Vertices.Length != mesh.vertexCount)
+		{
+			Vector3[] vertices = mesh.vertices;
+			Vector2[] uv = mesh.uv;
+			bool flag = uv != null && uv.Length == vertices.Length;
+			value = new DXRainbowSurfaceState
+			{
+				Vertices = vertices,
+				BodyVertices = new bool[vertices.Length],
+				NormalizedX = new float[vertices.Length],
+				NormalizedY = new float[vertices.Length],
+				Colors = new Color[vertices.Length]
+			};
+			float num = float.MaxValue;
+			float num2 = float.MaxValue;
+			float num3 = float.MinValue;
+			float num4 = float.MinValue;
+			for (int i = 0; i < vertices.Length; i++)
+			{
+				value.BodyVertices[i] = !flag || uv[i].y <= 1.02f;
+				if (value.BodyVertices[i])
+				{
+					num = Mathf.Min(num, vertices[i].x);
+					num2 = Mathf.Min(num2, vertices[i].y);
+					num3 = Mathf.Max(num3, vertices[i].x);
+					num4 = Mathf.Max(num4, vertices[i].y);
+				}
+			}
+			if (num == float.MaxValue)
+			{
+				for (int j = 0; j < value.BodyVertices.Length; j++)
+				{
+					value.BodyVertices[j] = true;
+					num = Mathf.Min(num, vertices[j].x);
+					num2 = Mathf.Min(num2, vertices[j].y);
+					num3 = Mathf.Max(num3, vertices[j].x);
+					num4 = Mathf.Max(num4, vertices[j].y);
+				}
+			}
+			float num5 = Mathf.Max(0.0001f, num3 - num);
+			float num6 = Mathf.Max(0.0001f, num4 - num2);
+			for (int k = 0; k < vertices.Length; k++)
+			{
+				value.NormalizedX[k] = (vertices[k].x - num) / num5;
+				value.NormalizedY[k] = (vertices[k].y - num2) / num6;
+			}
+			DXSurfaceRainbowStates[instanceID] = value;
+		}
+		if (value.RainbowApplied && value.EdgeMaskApplied == edgeMask && Mathf.Abs(time - value.LastUpdateTime) < 0.0001f)
+		{
+			return;
+		}
+		for (int l = 0; l < value.Colors.Length; l++)
+		{
+			if (!value.BodyVertices[l])
+			{
+				value.Colors[l] = Color.white;
+				continue;
+			}
+			float num7 = value.NormalizedX[l];
+			float num8 = value.NormalizedY[l];
+			float num9 = Mathf.Clamp01(Mathf.Sqrt((num7 - 0.5f) * (num7 - 0.5f) + (num8 - 0.5f) * (num8 - 0.5f)) * 1.414f);
+			Color color = Color.Lerp(DXBlendedRainbowColor(time * 0.46f + num7 * 0.92f + num8 * 0.58f + Mathf.Sin(time * 1.4f + num9 * 3.2f) * 0.08f), Color.white, 0.1f + num9 * 0.12f);
+			if (edgeMask)
+			{
+				float edge = Mathf.Max(Mathf.Abs(num7 - 0.5f), Mathf.Abs(num8 - 0.5f)) * 2f;
+				color.a = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.84f, 0.98f, edge));
+			}
+			else
+			{
+				color.a = 1f;
+			}
+			value.Colors[l] = color;
+		}
+		mesh.colors = value.Colors;
+		value.LastUpdateTime = time;
+		value.RainbowApplied = true;
+		value.EdgeMaskApplied = edgeMask;
+	}
+
+	private static void RestoreDXSurfaceGradient(Mesh mesh)
+	{
+		if (!(mesh == null))
+		{
+			int instanceID = mesh.GetInstanceID();
+			if (DXSurfaceRainbowStates.TryGetValue(instanceID, out var value) && value.RainbowApplied)
+			{
+				ApplyDXMeshVertexColors(mesh);
+				value.RainbowApplied = false;
+			value.EdgeMaskApplied = false;
+			}
+		}
 	}
 
 	private static Mesh GetOrCreateDXGlowMesh(Mesh sourceMesh)
 	{
-		int key = sourceMesh.GetInstanceID();
-		if (!DXGlowMeshCache.TryGetValue(key, out Mesh mesh) || mesh == null)
+		int instanceID = sourceMesh.GetInstanceID();
+		if (!DXGlowMeshCache.TryGetValue(instanceID, out var value) || value == null)
 		{
-			mesh = UnityEngine.Object.Instantiate(sourceMesh);
-			Color[] colors = new Color[mesh.vertexCount];
-			for (int i = 0; i < colors.Length; i++)
+			value = UnityEngine.Object.Instantiate(sourceMesh);
+			Color[] array = new Color[value.vertexCount];
+			for (int i = 0; i < array.Length; i++)
 			{
-				colors[i] = Color.white;
+				array[i] = Color.white;
 			}
-			mesh.colors = colors;
-			mesh.name = "ADOFAIDX_DX_Glow_Cached_" + key;
-			DXGlowMeshCache[key] = mesh;
+			value.colors = array;
+			value.name = "ADOFAIDX_DX_Glow_Cached_" + instanceID;
+			DXGlowMeshCache[instanceID] = value;
 		}
+		return value;
+	}
+
+	private static Mesh CreateDXMeshFromSprite(Sprite sprite)
+	{
+		if (sprite == null || sprite.vertices == null || sprite.triangles == null || sprite.vertices.Length == 0 || sprite.triangles.Length == 0)
+		{
+			return null;
+		}
+		Vector2[] vertices = sprite.vertices;
+		Vector2[] uv = sprite.uv;
+		ushort[] triangles = sprite.triangles;
+		Vector3[] array = new Vector3[vertices.Length];
+		Color[] array2 = new Color[vertices.Length];
+		int[] array3 = new int[triangles.Length];
+		for (int i = 0; i < vertices.Length; i++)
+		{
+			array[i] = new Vector3(vertices[i].x, vertices[i].y, 0f);
+			array2[i] = Color.white;
+		}
+		for (int j = 0; j < triangles.Length; j++)
+		{
+			array3[j] = triangles[j];
+		}
+		Mesh mesh = new Mesh();
+		mesh.name = "ADOFAIDX_DX_SpriteGlow_" + sprite.name;
+		mesh.vertices = array;
+		if (uv != null && uv.Length == array.Length)
+		{
+			mesh.uv = uv;
+		}
+		mesh.colors = array2;
+		mesh.triangles = array3;
+		mesh.RecalculateBounds();
 		return mesh;
+	}
+
+	private static Mesh CreateDXFullColorMesh(Mesh source)
+	{
+		if (source == null)
+		{
+			return null;
+		}
+		Vector3[] vertices = source.vertices;
+		Vector2[] uv = source.uv;
+		int[] triangles = source.triangles;
+		if (vertices == null || vertices.Length == 0 || triangles == null || triangles.Length == 0)
+		{
+			return null;
+		}
+		bool hasUv = uv != null && uv.Length == vertices.Length;
+		int[] remap = new int[vertices.Length];
+		for (int i = 0; i < remap.Length; i++)
+		{
+			remap[i] = -1;
+		}
+		List<Vector3> filteredVertices = new List<Vector3>(vertices.Length);
+		for (int j = 0; j < vertices.Length; j++)
+		{
+			if (hasUv && uv[j].y > 1.02f)
+			{
+				continue;
+			}
+			remap[j] = filteredVertices.Count;
+			filteredVertices.Add(vertices[j]);
+		}
+		List<int> filteredTriangles = new List<int>(triangles.Length);
+		for (int k = 0; k + 2 < triangles.Length; k += 3)
+		{
+			int a = triangles[k];
+			int b = triangles[k + 1];
+			int c = triangles[k + 2];
+			if (a >= 0 && b >= 0 && c >= 0 && a < remap.Length && b < remap.Length && c < remap.Length && remap[a] >= 0 && remap[b] >= 0 && remap[c] >= 0)
+			{
+				filteredTriangles.Add(remap[a]);
+				filteredTriangles.Add(remap[b]);
+				filteredTriangles.Add(remap[c]);
+			}
+		}
+		if (filteredVertices.Count == 0 || filteredTriangles.Count == 0)
+		{
+			return null;
+		}
+		Color[] colors = new Color[filteredVertices.Count];
+		for (int l = 0; l < colors.Length; l++)
+		{
+			colors[l] = Color.white;
+		}
+		Mesh result = new Mesh();
+		result.name = "ADOFAIDX_DX_FullColor_" + source.name;
+		result.SetVertices(filteredVertices);
+		result.SetTriangles(filteredTriangles, 0);
+		result.colors = colors;
+		result.RecalculateBounds();
+		return result;
 	}
 
 	private static void ClearDXMeshCaches()
 	{
-		foreach (Mesh mesh in DXSurfaceMeshCache.Values)
+		foreach (Mesh value in DXSurfaceMeshCache.Values)
 		{
-			if (mesh != null)
+			if (value != null)
 			{
-				UnityEngine.Object.Destroy(mesh);
+				UnityEngine.Object.Destroy(value);
 			}
 		}
-		foreach (Mesh mesh in DXGlowMeshCache.Values)
+		foreach (Mesh value2 in DXGlowMeshCache.Values)
 		{
-			if (mesh != null)
+			if (value2 != null)
 			{
-				UnityEngine.Object.Destroy(mesh);
+				UnityEngine.Object.Destroy(value2);
 			}
 		}
 		DXSurfaceMeshCache.Clear();
+		DXSurfaceRainbowStates.Clear();
 		DXGlowMeshCache.Clear();
 	}
 
@@ -2730,22 +3068,23 @@ public static class AdofaiDxMod
 		{
 			return;
 		}
-		int key = sourceMesh.GetInstanceID();
-		if (DXSurfaceMeshCache.TryGetValue(key, out Mesh surfaceMesh))
+		int instanceID = sourceMesh.GetInstanceID();
+		if (DXSurfaceMeshCache.TryGetValue(instanceID, out var value))
 		{
-			if (surfaceMesh != null)
+			if (value != null)
 			{
-				UnityEngine.Object.Destroy(surfaceMesh);
+				UnityEngine.Object.Destroy(value);
 			}
-			DXSurfaceMeshCache.Remove(key);
+			DXSurfaceMeshCache.Remove(instanceID);
 		}
-		if (DXGlowMeshCache.TryGetValue(key, out Mesh glowMesh))
+		DXSurfaceRainbowStates.Remove(instanceID);
+		if (DXGlowMeshCache.TryGetValue(instanceID, out var value2))
 		{
-			if (glowMesh != null)
+			if (value2 != null)
 			{
-				UnityEngine.Object.Destroy(glowMesh);
+				UnityEngine.Object.Destroy(value2);
 			}
-			DXGlowMeshCache.Remove(key);
+			DXGlowMeshCache.Remove(instanceID);
 		}
 	}
 
@@ -2768,32 +3107,40 @@ public static class AdofaiDxMod
 			GlowColors = new List<Color>(768),
 			GlowTriangles = new List<int>(1536)
 		};
-		int num = ((renderer != null) ? renderer.sortingLayerID : 0);
-		int num2 = ((renderer != null) ? renderer.sortingOrder : floor.floorRenderer.renderer.sortingOrder);
+		int sortingLayerID = ((renderer != null) ? renderer.sortingLayerID : 0);
+		int num = ((renderer != null) ? renderer.sortingOrder : floor.floorRenderer.renderer.sortingOrder);
 		MeshFilter meshFilter = ((renderer != null) ? renderer.GetComponent<MeshFilter>() : null);
 		MeshRenderer meshRenderer = renderer as MeshRenderer;
 		SpriteRenderer spriteRenderer = renderer as SpriteRenderer;
 		if (meshFilter != null && meshFilter.sharedMesh != null && meshRenderer != null)
 		{
-			Mesh mesh = GetOrCreateDXSurfaceMesh(meshFilter.sharedMesh);
+			Mesh orCreateDXSurfaceMesh = GetOrCreateDXSurfaceMesh(meshFilter.sharedMesh);
 			GameObject gameObject2 = new GameObject("GradientSurface");
 			gameObject2.transform.SetParent(gameObject.transform, worldPositionStays: false);
 			gameObject2.transform.localPosition = new Vector3(0f, 0f, -0.015f);
-			gameObject2.AddComponent<MeshFilter>().sharedMesh = mesh;
+			gameObject2.AddComponent<MeshFilter>().sharedMesh = orCreateDXSurfaceMesh;
 			MeshRenderer meshRenderer2 = gameObject2.AddComponent<MeshRenderer>();
-			Material[] sharedMaterials = meshRenderer.sharedMaterials;
-			meshRenderer2.sharedMaterials = sharedMaterials;
-			meshRenderer2.sortingLayerID = num;
-			meshRenderer2.sortingOrder = num2 + 1;
-			dXGameplayVisual.SurfaceMesh = mesh;
+			Material[] array = (meshRenderer2.sharedMaterials = meshRenderer.sharedMaterials);
+			meshRenderer2.sortingLayerID = sortingLayerID;
+			meshRenderer2.sortingOrder = num + 1;
+			dXGameplayVisual.SurfaceMesh = orCreateDXSurfaceMesh;
 			dXGameplayVisual.SurfaceRenderer = meshRenderer2;
-			dXGameplayVisual.SurfaceMaterial = ((sharedMaterials.Length != 0) ? sharedMaterials[0] : null);
+			dXGameplayVisual.SurfaceMaterial = ((array.Length != 0) ? array[0] : null);
 			dXGameplayVisual.MeshGlowSource = GetOrCreateDXGlowMesh(meshFilter.sharedMesh);
+			dXGameplayVisual.FullColorMesh = CreateDXFullColorMesh(meshFilter.sharedMesh);
+			if (dXGameplayVisual.FullColorMesh == null)
+			{
+				dXGameplayVisual.FullColorMesh = dXGameplayVisual.MeshGlowSource;
+			}
+			else
+			{
+				dXGameplayVisual.OwnsFullColorMesh = true;
+			}
 			ComputeDXMeshBounds(meshFilter.sharedMesh, tileSize, out dXGameplayVisual.LocalCenter, out dXGameplayVisual.HalfExtents);
 			if (!loggedDxVisualInfo)
 			{
 				loggedDxVisualInfo = true;
-				string text = ((sharedMaterials.Length != 0 && sharedMaterials[0] != null && sharedMaterials[0].shader != null) ? sharedMaterials[0].shader.name : "none");
+				string text = ((array.Length != 0 && array[0] != null && array[0].shader != null) ? array[0].shader.name : "none");
 				modEntry.Logger.Log("DX visual mesh: vertices=" + meshFilter.sharedMesh.vertexCount + ", shader=" + text + ", halfExtents=" + dXGameplayVisual.HalfExtents);
 			}
 		}
@@ -2805,12 +3152,16 @@ public static class AdofaiDxMod
 			SpriteRenderer spriteRenderer2 = gameObject3.AddComponent<SpriteRenderer>();
 			spriteRenderer2.sprite = spriteRenderer.sprite;
 			Material sharedMaterial = spriteRenderer.sharedMaterial;
-			Material surfaceSpriteMaterial = (spriteRenderer2.sharedMaterial = sharedMaterial);
-			spriteRenderer2.sortingLayerID = num;
-			spriteRenderer2.sortingOrder = num2 + 1;
+			Material material = (spriteRenderer2.sharedMaterial = sharedMaterial);
+			Material surfaceSpriteMaterial = material;
+			spriteRenderer2.sortingLayerID = sortingLayerID;
+			spriteRenderer2.sortingOrder = num + 1;
 			dXGameplayVisual.SurfaceSpriteRenderer = spriteRenderer2;
 			dXGameplayVisual.SurfaceSpriteMaterial = surfaceSpriteMaterial;
 			dXGameplayVisual.SourceSprite = spriteRenderer.sprite;
+			dXGameplayVisual.MeshGlowSource = CreateDXMeshFromSprite(spriteRenderer.sprite);
+			dXGameplayVisual.OwnsMeshGlowSource = dXGameplayVisual.MeshGlowSource != null;
+			dXGameplayVisual.FullColorMesh = dXGameplayVisual.MeshGlowSource;
 			Bounds bounds = spriteRenderer.sprite.bounds;
 			dXGameplayVisual.LocalCenter = new Vector2(bounds.center.x, bounds.center.y);
 			dXGameplayVisual.HalfExtents = new Vector2(bounds.extents.x, bounds.extents.y);
@@ -2822,34 +3173,60 @@ public static class AdofaiDxMod
 		}
 		else
 		{
-			float num3 = Mathf.Max(0.1f, tileSize);
+			float num2 = Mathf.Max(0.1f, tileSize);
 			dXGameplayVisual.LocalCenter = Vector2.zero;
-			dXGameplayVisual.HalfExtents = new Vector2(num3 * 0.52f, num3 * 0.34f);
+			dXGameplayVisual.HalfExtents = new Vector2(num2 * 0.52f, num2 * 0.34f);
 			if (!loggedDxVisualInfo)
 			{
 				loggedDxVisualInfo = true;
 				modEntry.Logger.Log("DX visual fallback bounds: " + dXGameplayVisual.HalfExtents);
 			}
 		}
+		if (dXGameplayVisual.MeshGlowSource != null)
+		{
+			GameObject gameObject4 = new GameObject("FullColorOverlay");
+			gameObject4.transform.SetParent(gameObject.transform, worldPositionStays: false);
+			gameObject4.transform.localPosition = new Vector3(0f, 0f, -0.02f);
+			gameObject4.AddComponent<MeshFilter>().sharedMesh = dXGameplayVisual.MeshGlowSource;
+			MeshRenderer meshRenderer3 = gameObject4.AddComponent<MeshRenderer>();
+			meshRenderer3.sharedMaterial = ((dxFullColorMaterial == null) ? dxGlowMaterial : dxFullColorMaterial);
+			meshRenderer3.sortingLayerID = sortingLayerID;
+			meshRenderer3.sortingOrder = num + 2;
+			meshRenderer3.enabled = false;
+			dXGameplayVisual.FullColorRenderer = meshRenderer3;
+		}
+		else if (dXGameplayVisual.SurfaceSpriteRenderer != null && dXGameplayVisual.SurfaceSpriteRenderer.sprite != null)
+		{
+			GameObject gameObject5 = new GameObject("FullColorSpriteOverlay");
+			gameObject5.transform.SetParent(gameObject.transform, worldPositionStays: false);
+			gameObject5.transform.localPosition = new Vector3(0f, 0f, -0.02f);
+			SpriteRenderer spriteRenderer3 = gameObject5.AddComponent<SpriteRenderer>();
+			spriteRenderer3.sprite = dXGameplayVisual.SurfaceSpriteRenderer.sprite;
+			spriteRenderer3.sharedMaterial = ((dxFullColorMaterial == null) ? dxGlowMaterial : dxFullColorMaterial);
+			spriteRenderer3.sortingLayerID = sortingLayerID;
+			spriteRenderer3.sortingOrder = num + 2;
+			spriteRenderer3.enabled = false;
+			dXGameplayVisual.FullColorSpriteRenderer = spriteRenderer3;
+		}
 		ResolveDXOutline(renderer, dXGameplayVisual, tileSize);
 		dXGameplayVisual.OutlineRefreshUntil = Time.unscaledTime + 3f;
 		dXGameplayVisual.NextOutlineRefreshTime = Time.unscaledTime + 0.1f;
-		GameObject gameObject4 = new GameObject("ProceduralEdgeGlow");
-		gameObject4.transform.SetParent(gameObject.transform, worldPositionStays: false);
-		gameObject4.transform.localPosition = new Vector3(0f, 0f, -0.04f);
-		MeshFilter meshFilter2 = gameObject4.AddComponent<MeshFilter>();
+		GameObject gameObject6 = new GameObject("ProceduralEdgeGlow");
+		gameObject6.transform.SetParent(gameObject.transform, worldPositionStays: false);
+		gameObject6.transform.localPosition = new Vector3(0f, 0f, -0.04f);
+		MeshFilter meshFilter2 = gameObject6.AddComponent<MeshFilter>();
 		dXGameplayVisual.GlowMesh = new Mesh();
 		dXGameplayVisual.GlowMesh.name = "ADOFAIDX_DX_Glow_" + floor.seqID;
 		dXGameplayVisual.GlowMesh.MarkDynamic();
 		meshFilter2.sharedMesh = dXGameplayVisual.GlowMesh;
-		dXGameplayVisual.GlowRenderer = gameObject4.AddComponent<MeshRenderer>();
+		dXGameplayVisual.GlowRenderer = gameObject6.AddComponent<MeshRenderer>();
 		dXGameplayVisual.GlowRenderer.sharedMaterial = dxGlowMaterial;
-		dXGameplayVisual.GlowRenderer.sortingLayerID = num;
-		dXGameplayVisual.GlowRenderer.sortingOrder = num2 + 5;
-		GameObject gameObject5 = new GameObject("HotEdge");
-		gameObject5.transform.SetParent(gameObject.transform, worldPositionStays: false);
-		gameObject5.transform.localPosition = new Vector3(0f, 0f, -0.06f);
-		LineRenderer lineRenderer = gameObject5.AddComponent<LineRenderer>();
+		dXGameplayVisual.GlowRenderer.sortingLayerID = sortingLayerID;
+		dXGameplayVisual.GlowRenderer.sortingOrder = num + 5;
+		GameObject gameObject7 = new GameObject("HotEdge");
+		gameObject7.transform.SetParent(gameObject.transform, worldPositionStays: false);
+		gameObject7.transform.localPosition = new Vector3(0f, 0f, -0.06f);
+		LineRenderer lineRenderer = gameObject7.AddComponent<LineRenderer>();
 		lineRenderer.useWorldSpace = false;
 		lineRenderer.loop = true;
 		lineRenderer.positionCount = ((dXGameplayVisual.OutlinePolygon != null && dXGameplayVisual.OutlinePolygon.Length >= 3) ? dXGameplayVisual.OutlinePolygon.Length : 4);
@@ -2857,10 +3234,9 @@ public static class AdofaiDxMod
 		lineRenderer.numCornerVertices = 4;
 		lineRenderer.textureMode = LineTextureMode.Stretch;
 		lineRenderer.sharedMaterial = dxEdgeMaterial;
-		lineRenderer.sortingLayerID = num;
-		lineRenderer.sortingOrder = num2 + 6;
+		lineRenderer.sortingLayerID = sortingLayerID;
+		lineRenderer.sortingOrder = num + 6;
 		dXGameplayVisual.Inner = lineRenderer;
-		CreateDXMeshGlowLayers(dXGameplayVisual, num, num2);
 		dXGameplayVisual.CreatedAt = Time.unscaledTime;
 		dXGameplayVisual.GeometryReady = false;
 		dXGameplayVisual.SourceColliderSignature = ComputeDXColliderSignature(renderer);
@@ -2869,6 +3245,8 @@ public static class AdofaiDxMod
 			dXGameplayVisual.SourceMesh = meshFilter.sharedMesh;
 			dXGameplayVisual.SourceMeshSignature = ComputeDXMeshSignature(dXGameplayVisual.SourceMesh);
 		}
+		RebuildDXSmoothGlowMesh(dXGameplayVisual, (settings == null) ? 0.8f : settings.gameplayDXGlowIntensity, tileSize);
+		RebuildDXInnerEdgeColorMesh(dXGameplayVisual);
 		dXGameplayVisual.NextGeometryCheckTime = Time.unscaledTime + 0.1f;
 		return dXGameplayVisual;
 	}
@@ -2879,15 +3257,15 @@ public static class AdofaiDxMod
 		{
 			return;
 		}
-		float[] array = DXGlowLayerScales;
+		float[] dXGlowLayerScales = DXGlowLayerScales;
 		Vector3 vector = new Vector3(visual.LocalCenter.x, visual.LocalCenter.y, 0f);
 		if (visual.MeshGlowSource != null)
 		{
-			visual.MeshGlowRenderers = new MeshRenderer[array.Length];
-			visual.MeshGlowMaterials = new Material[array.Length];
-			for (int i = 0; i < array.Length; i++)
+			visual.MeshGlowRenderers = new MeshRenderer[dXGlowLayerScales.Length];
+			visual.MeshGlowMaterials = new Material[dXGlowLayerScales.Length];
+			for (int i = 0; i < dXGlowLayerScales.Length; i++)
 			{
-				float num = array[i];
+				float num = dXGlowLayerScales[i];
 				GameObject gameObject = new GameObject("MeshGlow_" + i);
 				gameObject.transform.SetParent(visual.Root.transform, worldPositionStays: false);
 				gameObject.transform.localPosition = vector * (1f - num) + new Vector3(0f, 0f, -0.03f - (float)i * 0.002f);
@@ -2904,11 +3282,11 @@ public static class AdofaiDxMod
 		}
 		else if (!(visual.SurfaceSpriteRenderer == null) && !(visual.SurfaceSpriteRenderer.sprite == null))
 		{
-			visual.MeshGlowSpriteRenderers = new SpriteRenderer[array.Length];
-			visual.MeshGlowSpriteMaterials = new Material[array.Length];
-			for (int j = 0; j < array.Length; j++)
+			visual.MeshGlowSpriteRenderers = new SpriteRenderer[dXGlowLayerScales.Length];
+			visual.MeshGlowSpriteMaterials = new Material[dXGlowLayerScales.Length];
+			for (int j = 0; j < dXGlowLayerScales.Length; j++)
 			{
-				float num2 = array[j];
+				float num2 = dXGlowLayerScales[j];
 				GameObject gameObject2 = new GameObject("SpriteGlow_" + j);
 				gameObject2.transform.SetParent(visual.Root.transform, worldPositionStays: false);
 				gameObject2.transform.localPosition = vector * (1f - num2) + new Vector3(0f, 0f, -0.03f - (float)j * 0.002f);
@@ -2925,11 +3303,11 @@ public static class AdofaiDxMod
 		}
 	}
 
-	private static void UpdateDXMeshGlowLayers(DXGameplayVisual visual, Color baseColor, float intensity, float opacity, float time, bool visible)
+	private static void UpdateDXMeshGlowLayers(DXGameplayVisual visual, Color baseColor, float intensity, float opacity, float time, bool visible, bool forceWhite)
 	{
 		if (visual.MeshGlowSpriteRenderers != null)
 		{
-			UpdateDXSpriteGlowLayers(visual, baseColor, intensity, opacity, time, visible);
+			UpdateDXSpriteGlowLayers(visual, baseColor, intensity, opacity, time, visible, forceWhite);
 		}
 		else
 		{
@@ -2937,7 +3315,7 @@ public static class AdofaiDxMod
 			{
 				return;
 			}
-			float[] array = DXGlowLayerAlphas;
+			float[] dXGlowLayerAlphas = DXGlowLayerAlphas;
 			float num = 0.92f + 0.08f * Mathf.Sin(time * 2.1f + (float)visual.Floor.seqID * 0.73f);
 			for (int i = 0; i < visual.MeshGlowRenderers.Length; i++)
 			{
@@ -2951,8 +3329,9 @@ public static class AdofaiDxMod
 				if (meshRenderer.enabled)
 				{
 					float amount = (float)i / (float)Mathf.Max(1, visual.MeshGlowRenderers.Length - 1);
-					Color value = DXAnimatedColor(baseColor, amount);
-					value.a = Mathf.Clamp01(array[i] * intensity * opacity * num);
+					Color value = (forceWhite ? Color.white : DXAnimatedColor(baseColor, amount));
+					value.a = Mathf.Clamp01(dXGlowLayerAlphas[i] * intensity * opacity * num);
+					UpdateDXGlowTransform(meshRenderer.transform, visual.LocalCenter, DXGlowLayerScales[i], intensity);
 					DXGlowPropertyBlock.Clear();
 					if (material.HasProperty("_TintColor"))
 					{
@@ -2968,9 +3347,9 @@ public static class AdofaiDxMod
 		}
 	}
 
-	private static void UpdateDXSpriteGlowLayers(DXGameplayVisual visual, Color baseColor, float intensity, float opacity, float time, bool visible)
+	private static void UpdateDXSpriteGlowLayers(DXGameplayVisual visual, Color baseColor, float intensity, float opacity, float time, bool visible, bool forceWhite)
 	{
-		float[] array = DXGlowLayerAlphas;
+		float[] dXGlowLayerAlphas = DXGlowLayerAlphas;
 		float num = 0.92f + 0.08f * Mathf.Sin(time * 2.1f + (float)visual.Floor.seqID * 0.73f);
 		for (int i = 0; i < visual.MeshGlowSpriteRenderers.Length; i++)
 		{
@@ -2981,12 +3360,89 @@ public static class AdofaiDxMod
 				if (spriteRenderer.enabled)
 				{
 					float amount = (float)i / (float)Mathf.Max(1, visual.MeshGlowSpriteRenderers.Length - 1);
-					Color color = DXAnimatedColor(baseColor, amount);
-					color.a = Mathf.Clamp01(array[i] * intensity * opacity * num * 1.8f);
+					Color color = (forceWhite ? Color.white : DXAnimatedColor(baseColor, amount));
+					color.a = Mathf.Clamp01(dXGlowLayerAlphas[i] * intensity * opacity * num * 1.8f);
+					UpdateDXGlowTransform(spriteRenderer.transform, visual.LocalCenter, DXGlowLayerScales[i], intensity);
 					spriteRenderer.color = color;
 				}
 			}
 		}
+	}
+
+	private static void SetDXFullColorOverlay(DXGameplayVisual visual, Color color, float intensity, float opacity, bool visible, bool fullColor, bool edgeOnly)
+	{
+		bool flag = fullColor && visible && opacity > 0.001f;
+		Color color2 = color;
+		if (visual.SourceSprite != null)
+		{
+			float brightness = 1.1f + Mathf.Clamp01(intensity) * 0.2f;
+			color2.r = Mathf.Min(1f, color2.r * brightness);
+			color2.g = Mathf.Min(1f, color2.g * brightness);
+			color2.b = Mathf.Min(1f, color2.b * brightness);
+			color2.a = Mathf.Clamp01(opacity * (0.38f + Mathf.Clamp01(intensity) * 0.16f));
+		}
+		else
+		{
+			color2.a = Mathf.Clamp01(opacity * (0.78f + Mathf.Clamp01(intensity) * 0.22f));
+		}
+		if (visual.FullColorSpriteRenderer != null)
+		{
+			visual.FullColorSpriteRenderer.enabled = flag;
+			if (flag)
+			{
+				visual.FullColorSpriteRenderer.color = color2;
+			}
+		}
+		if (!(visual.FullColorRenderer != null))
+		{
+			return;
+		}
+		Mesh mesh = (edgeOnly ? visual.InnerEdgeColorMesh : ((visual.FullColorMesh == null) ? visual.MeshGlowSource : visual.FullColorMesh));
+		if (mesh == null || mesh.vertexCount == 0)
+		{
+			flag = false;
+		}
+		MeshFilter component = visual.FullColorRenderer.GetComponent<MeshFilter>();
+		if (component != null && component.sharedMesh != mesh)
+		{
+			component.sharedMesh = mesh;
+		}
+		visual.FullColorRenderer.enabled = flag;
+		if (flag)
+		{
+			Material targetMaterial = ((visual.SourceSprite == null) ? dxFullColorMaterial : dxGlowMaterial);
+			if (targetMaterial != null && visual.FullColorRenderer.sharedMaterial != targetMaterial)
+			{
+				visual.FullColorRenderer.sharedMaterial = targetMaterial;
+			}
+			Material sharedMaterial = visual.FullColorRenderer.sharedMaterial;
+			DXGlowPropertyBlock.Clear();
+			if (sharedMaterial != null && sharedMaterial.HasProperty("_TintColor"))
+			{
+				DXGlowPropertyBlock.SetColor("_TintColor", color2);
+			}
+			if (sharedMaterial != null && sharedMaterial.HasProperty("_Color"))
+			{
+				DXGlowPropertyBlock.SetColor("_Color", color2);
+			}
+			if (sharedMaterial != null && sharedMaterial.HasProperty("_RendererColor"))
+			{
+				DXGlowPropertyBlock.SetColor("_RendererColor", color2);
+			}
+			if (sharedMaterial != null && sharedMaterial.HasProperty("_MainTex"))
+			{
+				DXGlowPropertyBlock.SetTexture("_MainTex", ((edgeOnly || visual.SourceSprite == null) ? Texture2D.whiteTexture : visual.SourceSprite.texture));
+			}
+			visual.FullColorRenderer.SetPropertyBlock(DXGlowPropertyBlock);
+		}
+	}
+
+	private static void UpdateDXGlowTransform(Transform transform, Vector2 localCenter, float baseScale, float intensity)
+	{
+		float num = 0.25f + Mathf.Clamp01(intensity) * 2.75f;
+		float num2 = 1f + (baseScale - 1f) * num;
+		transform.localScale = new Vector3(num2, num2, 1f);
+		transform.localPosition = new Vector3(localCenter.x * (1f - num2), localCenter.y * (1f - num2), transform.localPosition.z);
 	}
 
 	private static bool DXSourceGeometryChanged(DXGameplayVisual visual, float time)
@@ -3199,7 +3655,8 @@ public static class AdofaiDxMod
 			long key = ((long)num << 32) | (uint)num2;
 			if (!dictionary.TryGetValue(key, out var value))
 			{
-				value = (dictionary[key] = weldedPoints.Count);
+				int num3 = (dictionary[key] = weldedPoints.Count);
+				value = num3;
 				weldedPoints.Add(new Vector2(vertices[i].x, vertices[i].y));
 			}
 			array[i] = value;
@@ -3207,19 +3664,25 @@ public static class AdofaiDxMod
 		Dictionary<long, int> dictionary2 = new Dictionary<long, int>();
 		for (int j = 0; j + 2 < triangles.Length; j += 3)
 		{
-			int num3 = triangles[j];
-			int num4 = triangles[j + 1];
-			int num5 = triangles[j + 2];
-			if (num3 >= 0 && num4 >= 0 && num5 >= 0 && num3 < vertices.Length && num4 < vertices.Length && num5 < vertices.Length && bodyVertices[num3] && bodyVertices[num4] && bodyVertices[num5])
+			int num4 = triangles[j];
+			int num5 = triangles[j + 1];
+			int num6 = triangles[j + 2];
+			if (num4 >= 0 && num5 >= 0 && num6 >= 0 && num4 < vertices.Length && num5 < vertices.Length && num6 < vertices.Length && bodyVertices[num4] && bodyVertices[num5] && bodyVertices[num6])
 			{
-				AddEdgeCount(dictionary2, array[num3], array[num4]);
 				AddEdgeCount(dictionary2, array[num4], array[num5]);
-				AddEdgeCount(dictionary2, array[num5], array[num3]);
+				AddEdgeCount(dictionary2, array[num5], array[num6]);
+				AddEdgeCount(dictionary2, array[num6], array[num4]);
 			}
 		}
-		HashSet<long> hashSet = new HashSet<long>(from pair in dictionary2
-			where pair.Value == 1
-			select pair.Key);
+		HashSet<long> hashSet = new HashSet<long>(dictionary2.Where(delegate(KeyValuePair<long, int> pair)
+		{
+			KeyValuePair<long, int> keyValuePair = pair;
+			return keyValuePair.Value == 1;
+		}).Select(delegate(KeyValuePair<long, int> pair)
+		{
+			KeyValuePair<long, int> keyValuePair = pair;
+			return keyValuePair.Key;
+		}));
 		if (hashSet.Count < 3)
 		{
 			return null;
@@ -3227,62 +3690,62 @@ public static class AdofaiDxMod
 		Dictionary<int, List<int>> dictionary3 = new Dictionary<int, List<int>>();
 		foreach (long item2 in hashSet)
 		{
-			int num6 = (int)(item2 >> 32);
-			int num7 = (int)(item2 & 0xFFFFFFFFu);
-			GetOrAddNeighbors(dictionary3, num6).Add(num7);
-			GetOrAddNeighbors(dictionary3, num7).Add(num6);
+			int num7 = (int)(item2 >> 32);
+			int num8 = (int)(item2 & 0xFFFFFFFFu);
+			GetOrAddNeighbors(dictionary3, num7).Add(num8);
+			GetOrAddNeighbors(dictionary3, num8).Add(num7);
 		}
 		Vector2[] result = null;
-		float num8 = -1f;
+		float num9 = -1f;
 		while (hashSet.Count > 0)
 		{
-			long num9 = hashSet.First();
-			hashSet.Remove(num9);
-			int num10 = (int)(num9 >> 32);
-			int num11 = num10;
-			int num12 = (int)(num9 & 0xFFFFFFFFu);
-			List<int> list = new List<int> { num10 };
-			for (int num13 = 0; num13 <= dictionary2.Count; num13++)
+			long num10 = hashSet.First();
+			hashSet.Remove(num10);
+			int num11 = (int)(num10 >> 32);
+			int num12 = num11;
+			int num13 = (int)(num10 & 0xFFFFFFFFu);
+			List<int> list = new List<int> { num11 };
+			for (int num14 = 0; num14 <= dictionary2.Count; num14++)
 			{
-				if (num12 == num10)
+				if (num13 == num11)
 				{
 					break;
 				}
-				list.Add(num12);
-				if (!dictionary3.TryGetValue(num12, out var value2))
+				list.Add(num13);
+				if (!dictionary3.TryGetValue(num13, out var value2))
 				{
 					list.Clear();
 					break;
 				}
-				int num14 = -1;
+				int num15 = -1;
 				foreach (int item3 in value2)
 				{
-					if (item3 != num11)
+					if (item3 != num12)
 					{
-						long item = MakeEdgeKey(num12, item3);
+						long item = MakeEdgeKey(num13, item3);
 						if (hashSet.Contains(item))
 						{
-							num14 = item3;
+							num15 = item3;
 							hashSet.Remove(item);
 							break;
 						}
 					}
 				}
-				num11 = num12;
-				num12 = num14;
-				if (num12 < 0)
+				num12 = num13;
+				num13 = num15;
+				if (num13 < 0)
 				{
 					list.Clear();
 					break;
 				}
 			}
-			if (num12 == num10 && list.Count >= 3)
+			if (num13 == num11 && list.Count >= 3)
 			{
 				Vector2[] array2 = list.Select((int index) => weldedPoints[index]).ToArray();
-				float num15 = Mathf.Abs(PolygonArea(array2));
-				if (num15 > num8)
+				float num16 = Mathf.Abs(PolygonArea(array2));
+				if (num16 > num9)
 				{
-					num8 = num15;
+					num9 = num16;
 					result = array2;
 				}
 			}
@@ -3311,7 +3774,7 @@ public static class AdofaiDxMod
 	{
 		if (!adjacency.TryGetValue(vertex, out var value))
 		{
-			value = (adjacency[vertex] = new List<int>(2));
+			return adjacency[vertex] = new List<int>(2);
 		}
 		return value;
 	}
@@ -3322,7 +3785,7 @@ public static class AdofaiDxMod
 		{
 			return null;
 		}
-		points.Sort((Vector2 a, Vector2 b) => (a.x != b.x) ? a.x.CompareTo(b.x) : a.y.CompareTo(b.y));
+		points.Sort((Vector2 a, Vector2 b) => (a.x == b.x) ? a.y.CompareTo(b.y) : a.x.CompareTo(b.x));
 		List<Vector2> list = new List<Vector2>(points.Count * 2);
 		for (int num = 0; num < points.Count; num++)
 		{
@@ -3614,26 +4077,49 @@ public static class AdofaiDxMod
 				dxEdgeMaterial.renderQueue = 3000;
 			}
 		}
+		if (dxFullColorMaterial == null)
+		{
+			Shader shader2 = Shader.Find("Sprites/Default");
+			if (shader2 == null)
+			{
+				shader2 = Shader.Find("Unlit/Transparent");
+			}
+			if (shader2 != null)
+			{
+				dxFullColorMaterial = new Material(shader2);
+				dxFullColorMaterial.hideFlags = HideFlags.HideAndDontSave;
+				dxFullColorMaterial.mainTexture = Texture2D.whiteTexture;
+				if (dxFullColorMaterial.HasProperty("_Color"))
+				{
+					dxFullColorMaterial.SetColor("_Color", Color.white);
+				}
+				if (dxFullColorMaterial.HasProperty("_Cull"))
+				{
+					dxFullColorMaterial.SetInt("_Cull", 0);
+				}
+				dxFullColorMaterial.renderQueue = 3100;
+			}
+		}
 		if (!(dxGlowMaterial == null))
 		{
 			return;
 		}
-		Shader shader2 = Shader.Find("Legacy Shaders/Particles/Additive");
-		if (shader2 == null)
+		Shader shader3 = Shader.Find("Legacy Shaders/Particles/Additive");
+		if (shader3 == null)
 		{
-			shader2 = Shader.Find("Mobile/Particles/Additive");
+			shader3 = Shader.Find("Mobile/Particles/Additive");
 		}
-		if (shader2 == null)
+		if (shader3 == null)
 		{
-			shader2 = Shader.Find("Particles/Additive");
+			shader3 = Shader.Find("Particles/Additive");
 		}
-		if (shader2 == null)
+		if (shader3 == null)
 		{
-			shader2 = Shader.Find("Sprites/Default");
+			shader3 = Shader.Find("Sprites/Default");
 		}
-		if (shader2 != null)
+		if (shader3 != null)
 		{
-			dxGlowMaterial = new Material(shader2);
+			dxGlowMaterial = new Material(shader3);
 			dxGlowMaterial.hideFlags = HideFlags.HideAndDontSave;
 			dxGlowMaterial.mainTexture = Texture2D.whiteTexture;
 			if (dxGlowMaterial.HasProperty("_TintColor"))
@@ -3649,7 +4135,7 @@ public static class AdofaiDxMod
 				dxGlowMaterial.SetInt("_Cull", 0);
 			}
 			dxGlowMaterial.renderQueue = 3000;
-			modEntry.Logger.Log("DX glow shader: " + shader2.name);
+			modEntry.Logger.Log("DX glow shader: " + shader3.name);
 		}
 	}
 
@@ -3658,10 +4144,35 @@ public static class AdofaiDxMod
 		return new Color((float)Mathf.Clamp(settings.dxNoteColorR, 0, 255) / 255f, (float)Mathf.Clamp(settings.dxNoteColorG, 0, 255) / 255f, (float)Mathf.Clamp(settings.dxNoteColorB, 0, 255) / 255f, 1f);
 	}
 
+	private static bool IsDXColorVariationMax()
+	{
+		if (settings != null)
+		{
+			return settings.dxColorVariation >= 9.9999f;
+		}
+		return false;
+	}
+
+	private static Color DXRainbowColor(float time, float phase)
+	{
+		return DXBlendedRainbowColor(time * 0.46f + phase * 0.055f);
+	}
+
+	private static Color DXBlendedRainbowColor(float phase)
+	{
+		float num = phase * Mathf.PI * 2f;
+		Color result = new Color(0.57f + 0.34f * Mathf.Cos(num), 0.57f + 0.34f * Mathf.Cos(num + Mathf.PI * 2f / 3f), 0.57f + 0.34f * Mathf.Cos(num + 4.1887903f), 1f);
+		result.r = Mathf.Clamp01(result.r);
+		result.g = Mathf.Clamp01(result.g);
+		result.b = Mathf.Clamp01(result.b);
+		result.a = 1f;
+		return result;
+	}
+
 	private static Color DXAnimatedColor(Color baseColor, float amount)
 	{
 		Color.RGBToHSV(baseColor, out float H, out float S, out float V);
-		float num = Mathf.Clamp((settings == null) ? 1f : settings.dxColorVariation, 1f, 3f);
+		float num = Mathf.Clamp((settings == null) ? 1f : settings.dxColorVariation, 0.5f, 10f);
 		float h = Mathf.Repeat(H + Mathf.Lerp(0.018f, -0.012f, amount) * num, 1f);
 		float s = Mathf.Clamp01(S + Mathf.Lerp(-0.08f, 0.08f, amount) * num);
 		float v = Mathf.Clamp01(V + Mathf.Lerp(0.16f, -0.13f, amount) * num);
@@ -3803,52 +4314,237 @@ public static class AdofaiDxMod
 		halfExtents = new Vector2(Mathf.Clamp((num3 - num) * 0.5f, num6 * 0.2f, num6 * 0.8f), Mathf.Clamp((num4 - num2) * 0.5f, num6 * 0.12f, num6 * 0.65f));
 	}
 
-	private static void BuildDXProceduralGlow(DXGameplayVisual visual, float time, float intensity, float tileSize, Color noteBaseColor, float opacity)
+	private static void BuildDXProceduralGlow(DXGameplayVisual visual, float time, float intensity, float tileSize, Color noteBaseColor, float opacity, bool visible, bool forceWhite)
 	{
 		if (visual.GlowMesh == null || visual.GlowRenderer == null)
 		{
 			return;
 		}
-		if (intensity <= 0.001f)
+		if (!visible || visual.GlowMesh.vertexCount == 0 || intensity <= 0.001f || opacity <= 0.001f)
 		{
 			visual.GlowRenderer.enabled = false;
 			return;
 		}
 		visual.GlowRenderer.enabled = true;
-		if (visual.GlowGridPositions == null)
+		if (visual.GlowRenderer.transform.parent != visual.Root.transform)
 		{
-			InitializeDXGlowGeometry(visual, tileSize);
+			visual.GlowRenderer.transform.SetParent(visual.Root.transform, worldPositionStays: false);
 		}
-		if (visual.GlowGridPositions == null)
+		float num = Mathf.Clamp01(intensity);
+		if (Mathf.Abs(visual.GlowBuiltIntensity - num) > 0.01f)
+		{
+			RebuildDXSmoothGlowMesh(visual, num, tileSize);
+			visual.GlowBuiltIntensity = num;
+		}
+		visual.GlowRenderer.transform.localScale = Vector3.one;
+		float num2 = 0.96f + 0.04f * Mathf.Sin(time * 1.9f + (float)visual.Floor.seqID * 0.57f);
+		Color value = (forceWhite ? Color.white : DXAnimatedColor(noteBaseColor, 0.52f));
+		float num3 = ((visual.SourceSprite == null) ? (0.9f + num * 0.45f) : (0.82f + num * 0.16f));
+		value.r *= num3;
+		value.g *= num3;
+		value.b *= num3;
+		value.a = Mathf.Clamp01(Mathf.Pow(num, 0.65f) * opacity * num2 * ((visual.SourceSprite == null) ? 1.12f : 0.52f));
+		Material sharedMaterial = visual.GlowRenderer.sharedMaterial;
+		DXGlowPropertyBlock.Clear();
+		if (sharedMaterial != null && sharedMaterial.HasProperty("_TintColor"))
+		{
+			DXGlowPropertyBlock.SetColor("_TintColor", value);
+		}
+		if (sharedMaterial != null && sharedMaterial.HasProperty("_Color"))
+		{
+			DXGlowPropertyBlock.SetColor("_Color", value);
+		}
+		if (sharedMaterial != null && sharedMaterial.HasProperty("_MainTex"))
+		{
+			DXGlowPropertyBlock.SetTexture("_MainTex", (visual.SourceSprite == null) ? Texture2D.whiteTexture : visual.SourceSprite.texture);
+		}
+		visual.GlowRenderer.SetPropertyBlock(DXGlowPropertyBlock);
+	}
+
+	private static void RebuildDXSpriteSmoothGlowMesh(DXGameplayVisual visual, float intensity, float tileSize)
+	{
+		Mesh source = visual.FullColorMesh;
+		if (source == null)
+		{
+			visual.GlowMesh.Clear();
+			return;
+		}
+		Vector3[] sourceVertices = source.vertices;
+		Vector2[] sourceUv = source.uv;
+		int[] sourceTriangles = source.triangles;
+		if (sourceVertices == null || sourceVertices.Length == 0 || sourceTriangles == null || sourceTriangles.Length == 0)
+		{
+			visual.GlowMesh.Clear();
+			return;
+		}
+		const int shellCount = 32;
+		float outerOffset = Mathf.Max(0.1f, tileSize) * (0.04f + Mathf.Clamp01(intensity) * 0.26f);
+		float halfRadius = Mathf.Max(0.001f, visual.HalfExtents.x);
+		float outerScale = 1.008f + outerOffset / halfRadius;
+		Vector3 center = new Vector3(visual.LocalCenter.x, visual.LocalCenter.y, 0f);
+		Vector3[] vertices = new Vector3[sourceVertices.Length * shellCount];
+		Color[] colors = new Color[vertices.Length];
+		Vector2[] uv = new Vector2[vertices.Length];
+		int[] triangles = new int[sourceTriangles.Length * shellCount];
+		int vertexOffset = 0;
+		int triangleOffset = 0;
+		for (int shell = 0; shell < shellCount; shell++)
+		{
+			float t = (float)shell / (float)(shellCount - 1);
+			float scale = Mathf.Lerp(1.008f, outerScale, Mathf.Pow(t, 0.9f));
+			float alpha = 0.004f + 0.2f * Mathf.Pow(1f - t, 2f);
+			for (int i = 0; i < sourceVertices.Length; i++)
+			{
+				Vector3 expanded = center + (sourceVertices[i] - center) * scale;
+				expanded.z = -0.04f - (float)shell * 0.0005f;
+				vertices[vertexOffset + i] = expanded;
+				colors[vertexOffset + i] = new Color(1f, 1f, 1f, alpha);
+				uv[vertexOffset + i] = ((sourceUv != null && sourceUv.Length == sourceVertices.Length) ? sourceUv[i] : Vector2.zero);
+			}
+			for (int j = 0; j < sourceTriangles.Length; j++)
+			{
+				triangles[triangleOffset + j] = sourceTriangles[j] + vertexOffset;
+			}
+			vertexOffset += sourceVertices.Length;
+			triangleOffset += sourceTriangles.Length;
+		}
+		visual.GlowMesh.Clear();
+		visual.GlowMesh.SetVertices(vertices);
+		visual.GlowMesh.SetColors(colors);
+		visual.GlowMesh.uv = uv;
+		visual.GlowMesh.SetTriangles(triangles, 0);
+		visual.GlowMesh.RecalculateBounds();
+		visual.GlowRenderer.transform.localPosition = Vector3.zero;
+	}
+
+	private static void RebuildDXSmoothGlowMesh(DXGameplayVisual visual, float intensity, float tileSize)
+	{
+		if (visual == null || visual.GlowMesh == null || visual.MeshGlowSource == null)
 		{
 			return;
 		}
-		float num = Mathf.Max(0.1f, tileSize);
-		float num2 = 0.96f + 0.04f * Mathf.Sin(time * 1.65f + (float)visual.Floor.seqID * 0.71f);
-		float num3 = num * (0.18f + 0.24f * intensity) * num2;
-		float num4 = 0.92f + 0.08f * Mathf.Sin(time * 1.9f + (float)visual.Floor.seqID * 0.57f);
-		Color.RGBToHSV(noteBaseColor, out float H, out float S, out float V);
-		Color a = Color.HSVToRGB(Mathf.Repeat(H + 0.012f, 1f), Mathf.Clamp01(S * 0.45f), Mathf.Clamp01(V + 0.2f));
-		Color color = DXAnimatedColor(noteBaseColor, 0.52f);
-		Color b = Color.HSVToRGB(Mathf.Repeat(H - 0.01f, 1f), Mathf.Clamp01(S + 0.04f), Mathf.Clamp01(V - 0.18f));
-		visual.GlowColors.Clear();
-		for (int i = 0; i < visual.GlowGridPositions.Length; i++)
+		if (visual.SourceSprite != null)
 		{
-			float num5 = visual.GlowGridDistances[i];
-			Color item = new Color(0f, 0f, 0f, 0f);
-			if (num5 >= 0f)
-			{
-				float num6 = Mathf.Clamp01(num5 / num3);
-				float f = 1f - num6;
-				float num7 = Mathf.Pow(f, 1.8f) * 0.16f;
-				float num8 = Mathf.Pow(f, 4.2f) * 0.46f;
-				float a2 = Mathf.Clamp01(intensity * (num7 + num8) * num4 * Mathf.Clamp01(opacity));
-				item = ((num6 < 0.46f) ? Color.Lerp(a, color, num6 / 0.46f) : Color.Lerp(color, b, (num6 - 0.46f) / 0.54f));
-				item.a = a2;
-			}
-			visual.GlowColors.Add(item);
+			RebuildDXSpriteSmoothGlowMesh(visual, intensity, tileSize);
+			return;
 		}
-		visual.GlowMesh.SetColors(visual.GlowColors);
+		bool exactBoundary;
+		Vector2[] array = BuildDXMeshOutline(visual.MeshGlowSource, out exactBoundary);
+		if (!exactBoundary || array == null || array.Length < 3)
+		{
+			visual.GlowMesh.Clear();
+			return;
+		}
+		Vector3 vector = new Vector3(visual.LocalCenter.x, visual.LocalCenter.y, 0f);
+		float b = 1.05f + Mathf.Clamp01(intensity) * 0.82f;
+		int num = array.Length * 2;
+		Vector3[] array2 = new Vector3[num * 32];
+		Color[] array3 = new Color[array2.Length];
+		int[] array4 = new int[array.Length * 6 * 32];
+		int num2 = 0;
+		int num3 = 0;
+		for (int i = 0; i < 32; i++)
+		{
+			float num4 = (float)i / 32f;
+			float num5 = (float)(i + 1) / 32f;
+			float num6 = Mathf.Lerp(1.008f, b, Mathf.Pow(num4, 0.9f));
+			float num7 = Mathf.Lerp(1.008f, b, Mathf.Pow(num5, 0.9f));
+			Color color = new Color(1f, 1f, 1f, 0.008f + 0.552f * Mathf.Pow(1f - num4, 2f));
+			Color color2 = new Color(1f, 1f, 1f, 0.008f + 0.552f * Mathf.Pow(1f - num5, 2f));
+			for (int j = 0; j < array.Length; j++)
+			{
+				Vector3 vector2 = new Vector3(array[j].x, array[j].y, 0f);
+				Vector3 vector3 = vector + (vector2 - vector) * num6;
+				Vector3 vector4 = vector + (vector2 - vector) * num7;
+				vector3.z = -0.04f;
+				vector4.z = -0.04f;
+				array2[num2 + j * 2] = vector3;
+				array2[num2 + j * 2 + 1] = vector4;
+				array3[num2 + j * 2] = color;
+				array3[num2 + j * 2 + 1] = color2;
+			}
+			for (int k = 0; k < array.Length; k++)
+			{
+				int num8 = (k + 1) % array.Length;
+				int num9 = num2 + k * 2;
+				int num10 = num9 + 1;
+				int num11 = num2 + num8 * 2;
+				int num12 = num11 + 1;
+				array4[num3++] = num9;
+				array4[num3++] = num11;
+				array4[num3++] = num12;
+				array4[num3++] = num9;
+				array4[num3++] = num12;
+				array4[num3++] = num10;
+			}
+			num2 += num;
+		}
+		visual.GlowMesh.Clear();
+		visual.GlowMesh.SetVertices(array2);
+		visual.GlowMesh.SetColors(array3);
+		visual.GlowMesh.SetTriangles(array4, 0);
+		visual.GlowMesh.RecalculateBounds();
+		visual.GlowRenderer.transform.localPosition = Vector3.zero;
+	}
+
+	private static void RebuildDXInnerEdgeColorMesh(DXGameplayVisual visual)
+	{
+		if (visual == null || visual.MeshGlowSource == null)
+		{
+			return;
+		}
+		bool exactBoundary;
+		Vector2[] array = BuildDXMeshOutline(visual.MeshGlowSource, out exactBoundary);
+		if (!exactBoundary || array == null || array.Length < 3)
+		{
+			if (visual.InnerEdgeColorMesh != null)
+			{
+				visual.InnerEdgeColorMesh.Clear();
+			}
+			return;
+		}
+		if (visual.InnerEdgeColorMesh == null)
+		{
+			visual.InnerEdgeColorMesh = new Mesh();
+			visual.InnerEdgeColorMesh.name = "ADOFAIDX_DX_InnerEdgeColor_" + visual.Floor.seqID;
+			visual.InnerEdgeColorMesh.MarkDynamic();
+		}
+		Vector3 vector = new Vector3(visual.LocalCenter.x, visual.LocalCenter.y, 0f);
+		Vector3[] array2 = new Vector3[array.Length * 2];
+		Color[] array3 = new Color[array2.Length];
+		int[] array4 = new int[array.Length * 6];
+		for (int i = 0; i < array.Length; i++)
+		{
+			Vector3 vector2 = new Vector3(array[i].x, array[i].y, 0f);
+			Vector3 vector3 = vector + (vector2 - vector) * 1.006f;
+			Vector3 vector4 = vector + (vector2 - vector) * 0.84f;
+			vector3.z = -0.025f;
+			vector4.z = -0.025f;
+			array2[i * 2] = vector3;
+			array2[i * 2 + 1] = vector4;
+			array3[i * 2] = Color.white;
+			array3[i * 2 + 1] = Color.white;
+		}
+		int num = 0;
+		for (int j = 0; j < array.Length; j++)
+		{
+			int num2 = (j + 1) % array.Length;
+			int num3 = j * 2;
+			int num4 = num3 + 1;
+			int num5 = num2 * 2;
+			int num6 = num5 + 1;
+			array4[num++] = num3;
+			array4[num++] = num5;
+			array4[num++] = num6;
+			array4[num++] = num3;
+			array4[num++] = num6;
+			array4[num++] = num4;
+		}
+		visual.InnerEdgeColorMesh.Clear();
+		visual.InnerEdgeColorMesh.vertices = array2;
+		visual.InnerEdgeColorMesh.colors = array3;
+		visual.InnerEdgeColorMesh.triangles = array4;
+		visual.InnerEdgeColorMesh.RecalculateBounds();
 	}
 
 	private static void InitializeDXGlowGeometry(DXGameplayVisual visual, float tileSize)
@@ -3871,26 +4567,26 @@ public static class AdofaiDxMod
 			num3 = Mathf.Max(num3, vector.x);
 			num4 = Mathf.Max(num4, vector.y);
 		}
-		float num5 = Mathf.Max(0.1f, tileSize) * 0.48f;
+		float num5 = Mathf.Max(0.1f, tileSize) * 0.72f;
 		num -= num5;
 		num2 -= num5;
 		num3 += num5;
 		num4 += num5;
-		int num6 = 41;
-		int num7 = num6 * 33;
+		int num6 = 49;
+		int num7 = num6 * 39;
 		visual.GlowGridPositions = new Vector2[num7];
 		visual.GlowGridDistances = new float[num7];
 		visual.GlowVertices.Clear();
 		visual.GlowColors.Clear();
 		visual.GlowTriangles.Clear();
 		int num8 = 0;
-		for (int j = 0; j <= 32; j++)
+		for (int j = 0; j <= 38; j++)
 		{
-			float t = (float)j / 32f;
+			float t = (float)j / 38f;
 			float y = Mathf.Lerp(num2, num4, t);
-			for (int k = 0; k <= 40; k++)
+			for (int k = 0; k <= 48; k++)
 			{
-				float t2 = (float)k / 40f;
+				float t2 = (float)k / 48f;
 				Vector2 vector2 = new Vector2(Mathf.Lerp(num, num3, t2), y);
 				bool flag = IsPointInsidePolygon(vector2, outlinePolygon);
 				visual.GlowGridPositions[num8] = vector2;
@@ -3900,18 +4596,16 @@ public static class AdofaiDxMod
 				num8++;
 			}
 		}
-		for (int l = 0; l < 32; l++)
+		for (int l = 0; l < 38; l++)
 		{
-			for (int m = 0; m < 40; m++)
+			for (int m = 0; m < 48; m++)
 			{
 				int num9 = l * num6 + m;
-				int num10 = num9 + 1;
-				int num11 = num9 + num6;
-				int num12 = num11 + 1;
-				AddDXGlowTriangle(visual, num9, num10, num12);
-				AddDXGlowTriangle(visual, num9, num12, num11);
-				AddDXGlowTriangle(visual, num9, num12, num10);
-				AddDXGlowTriangle(visual, num9, num11, num12);
+				int b = num9 + 1;
+				int num10 = num9 + num6;
+				int num11 = num10 + 1;
+				AddDXGlowTriangle(visual, num9, b, num11);
+				AddDXGlowTriangle(visual, num9, num11, num10);
 			}
 		}
 		visual.GlowMesh.SetVertices(visual.GlowVertices);
@@ -3970,6 +4664,18 @@ public static class AdofaiDxMod
 		if (visual.GlowMesh != null)
 		{
 			UnityEngine.Object.Destroy(visual.GlowMesh);
+		}
+		if (visual.OwnsMeshGlowSource && visual.MeshGlowSource != null)
+		{
+			UnityEngine.Object.Destroy(visual.MeshGlowSource);
+		}
+		if (visual.OwnsFullColorMesh && visual.FullColorMesh != null)
+		{
+			UnityEngine.Object.Destroy(visual.FullColorMesh);
+		}
+		if (visual.InnerEdgeColorMesh != null)
+		{
+			UnityEngine.Object.Destroy(visual.InnerEdgeColorMesh);
 		}
 		if (visual.GameplayTextRoot != null)
 		{
@@ -4642,12 +5348,12 @@ public static class AdofaiDxMod
 		{
 			return 0f;
 		}
-		float bonus = Mathf.Clamp01((float)perfectCount / (float)markedFloors.Count) * BreakMaxXAccuracyBonus;
+		float num = Mathf.Clamp01((float)perfectCount / (float)markedFloors.Count) * 0.01f;
 		if (perfectCount >= markedFloors.Count)
 		{
-			bonus += BreakAccuracyDisplayEpsilon;
+			num += 1E-07f;
 		}
-		return Mathf.Min(BreakMaxXAccuracyBonus + BreakAccuracyDisplayEpsilon, bonus);
+		return Mathf.Min(0.010000099f, num);
 	}
 
 	private static void GetResultBreakStatistics(scrMarginTracker tracker, out int perfectCount, out int totalCount)
@@ -4703,20 +5409,20 @@ public static class AdofaiDxMod
 			return resultText;
 		}
 		GetResultBreakStatistics(tracker, out var perfectCount, out var _);
-		float resultBreakBonus = CalculateBreakXAccuracyBonus(perfectCount);
+		float num3 = CalculateBreakXAccuracyBonus(perfectCount);
 		if (settings.mergeDXAccuracy)
 		{
-			string value = "(+" + (resultBreakBonus * 100f).ToString("0.00", CultureInfo.InvariantCulture) + "%)";
+			string value = "(+" + (num3 * 100f).ToString("0.00", CultureInfo.InvariantCulture) + "%)";
 			return resultText.Insert(num + 1, value);
 		}
-		decimal baseXAccuracyPercent = ((tracker == null) ? 0m : ((decimal)tracker.percentXAcc * 100m));
-		decimal dxAccuracyPercent = Math.Min(101m, baseXAccuracyPercent + (decimal)resultBreakBonus * 100m);
-		string value2 = Localized("DX-精准度: ", "DX-Accuracy: ") + dxAccuracyPercent.ToString("0.00", CultureInfo.InvariantCulture) + "%";
-		if (Math.Round(dxAccuracyPercent, 2, MidpointRounding.AwayFromZero) >= 101m)
+		decimal num4 = ((tracker == null) ? 0m : ((decimal)tracker.percentXAcc * 100m));
+		decimal d = Math.Min(101m, num4 + (decimal)num3 * 100m);
+		string text3 = Localized("DX-精准度: ", "DX-Accuracy: ") + d.ToString("0.00", CultureInfo.InvariantCulture) + "%";
+		if (Math.Round(d, 2, MidpointRounding.AwayFromZero) >= 101m)
 		{
-			value2 = "<color=#FFDA00>" + value2 + "</color>";
+			text3 = "<color=#FFDA00>" + text3 + "</color>";
 		}
-		resultText = ((num2 >= 0) ? resultText.Insert(num2 + 1, value2 + "\n") : (resultText + "\n" + value2));
+		resultText = ((num2 >= 0) ? resultText.Insert(num2 + 1, text3 + "\n") : (resultText + "\n" + text3));
 		return resultText;
 	}
 
@@ -4865,22 +5571,21 @@ internal sealed class AdofaiDxOverlay : MonoBehaviour
 [HarmonyPatch(typeof(scrPlanet), "MoveToNextFloor")]
 internal static class BreakJudgementPatch
 {
-	private static void Prefix(scrPlanet __instance, scrFloor __0, HitMargin __2)
+	private static void Prefix(scrPlanet __instance, scrFloor __0)
 	{
 		if ((UnityEngine.Object)(object)__instance == null || (UnityEngine.Object)(object)__instance.currfloor == null || (UnityEngine.Object)(object)__0 == null || (UnityEngine.Object)(object)__instance.player == null)
 		{
 			return;
 		}
-		scrFloor source = __instance.currfloor;
-		scrFloor target = __0;
-		if (!AdofaiDxMod.IsBreakFloor(target.seqID))
+		scrFloor currfloor = __instance.currfloor;
+		if (!AdofaiDxMod.IsBreakFloor(__0.seqID))
 		{
 			return;
 		}
-		string text = AdofaiDxMod.DescribeBreakNoteType(source, target, __instance.player);
-		if (AdofaiDxMod.IsAutomaticBreakTransition(target, __instance.player))
+		string text = AdofaiDxMod.DescribeBreakNoteType(currfloor, __0, __instance.player);
+		if (AdofaiDxMod.IsAutomaticBreakTransition(__0, __instance.player))
 		{
-			AdofaiDxMod.RecordBreakHit(target, perfect: true, HitMargin.Perfect, text + "+Automatic");
+			AdofaiDxMod.RecordBreakHit(__0, perfect: true, HitMargin.Auto, text + "+Automatic");
 			return;
 		}
 		scrConductor instance = scrConductor.instance;
@@ -4889,26 +5594,27 @@ internal static class BreakJudgementPatch
 			return;
 		}
 		object value = ((object)instance).GetType().GetField("song").GetValue(instance);
-		if (value != null)
+		if (value == null)
 		{
-			System.Reflection.PropertyInfo property = value.GetType().GetProperty("pitch");
-			if (!(property == null))
+			return;
+		}
+		System.Reflection.PropertyInfo property = value.GetType().GetProperty("pitch");
+		if (!(property == null))
+		{
+			double num = scrMisc.GetAdjustedAngleBoundaryInDeg(GCS.difficulty, (double)instance.bpm * __instance.planetarySystem.speed, Convert.ToDouble(property.GetValue(value, null)), __0.marginScale).Perfect * 0.3333333432674408;
+			double num2 = (__instance.cachedAngle - __instance.targetExitAngle) * (__instance.planetarySystem.isCW ? 1.0 : (-1.0)) * 57.295780181884766;
+			bool flag = Math.Abs(num2) <= num;
+			HitMargin grade;
+			if (flag)
 			{
-				double num = scrMisc.GetAdjustedAngleBoundaryInDeg(HitMarginGeneral.Perfect, (float)((double)instance.bpm * __instance.planetarySystem.speed), Convert.ToSingle(property.GetValue(value, null)), target.marginScale) * 0.3333333432674408;
-				double num2 = (__instance.cachedAngle - __instance.targetExitAngle) * (__instance.planetarySystem.isCW ? 1.0 : (-1.0)) * 57.295780181884766;
-				bool flag = Math.Abs(num2) <= num;
-				HitMargin grade;
-				if (flag)
-				{
-					double num3 = num / 3.0;
-					grade = ((Math.Abs(num2) <= num3) ? HitMargin.Perfect : ((num2 < 0.0) ? HitMargin.EarlyPerfect : HitMargin.LatePerfect));
-				}
-				else
-				{
-					grade = ((num2 < 0.0) ? HitMargin.VeryEarly : HitMargin.VeryLate);
-				}
-				AdofaiDxMod.RecordBreakHit(target, flag, grade, text);
+				double num3 = num / 3.0;
+				grade = ((Math.Abs(num2) <= num3) ? HitMargin.XPerfect : ((num2 < 0.0) ? HitMargin.EarlyPerfect : HitMargin.LatePerfect));
 			}
+			else
+			{
+				grade = ((num2 < 0.0) ? HitMargin.VeryEarly : HitMargin.VeryLate);
+			}
+			AdofaiDxMod.RecordBreakHit(__0, flag, grade, text);
 		}
 	}
 }
@@ -4972,6 +5678,8 @@ public sealed class AdofaiDxSettings : UnityModManager.ModSettings
 
 	public bool showGameplayDXMarker = true;
 
+	public bool onlyEdgeColor = true;
+
 	public bool gameplayDXFloat = true;
 
 	public float gameplayDXFloatAmplitude = 1f;
@@ -5034,7 +5742,7 @@ public sealed class AdofaiDxSettings : UnityModManager.ModSettings
 
 	public override void Save(UnityModManager.ModEntry modEntry)
 	{
-		UnityModManager.ModSettings.Save(this, modEntry);
+		UnityModManager.ModSettings.Save<AdofaiDxSettings>(this, modEntry);
 	}
 }
 [HarmonyPatch(typeof(scrController), "StartLoadingScene")]
